@@ -6,10 +6,11 @@ https://www.eclipse.org/paho/files/mqttdoc/MQTTClient/html/_m_q_t_t_client_8h.ht
 https://www.eclipse.org/paho/clients/c/
 https://bismog.github.io/2019/02/23/play-with-paho-mqtt-c.html
 
-## Prerequisites
-
-make deps
-
 ## Build and run
 
 make run
+
+## Dev environment
+
+vscode on win10
+wsl debian (see https://code.visualstudio.com/docs/cpp/config-wsl)
