@@ -130,10 +130,14 @@ int onMessageArrived(void *context, char *topicName, int topicLen, MQTTAsync_mes
     printf("Message received on topic %s is %.*s.\n", topicName, message->payloadlen, (char *)(message->payload));
 
     MQTTMessage *result = malloc(sizeof(MQTTMessage));
-    result->payload = malloc(message->payloadlen);
+    
+    result->payload = malloc(message->payloadlen + 1);
     memcpy(result->payload, message->payload, message->payloadlen);
-    result->topic = malloc(topicLen);
+    result->payload[message->payloadlen] = NULL;
+
+    result->topic = malloc(topicLen + 1);
     memcpy(result->topic, topicName, topicLen);
+    result->topic[topicLen] = NULL;
 
     (*callback)(result);
 

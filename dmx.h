@@ -6,6 +6,7 @@
 #include <string.h>
 #include <ftdi.h>
 #include <unistd.h>
+#include <stdbool.h>
 
 void DMX_Initialize();
 void DMX_Loop();
