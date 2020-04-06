@@ -1,66 +1,31 @@
-#include "stdio.h"
-#include "stdlib.h"
-#include "string.h"
-#include "MQTTClient.h"
+#include "dmx.h"
+#include "mqtt.h"
 
-#define ADDRESS     "tcp://192.168.1.10:1883"
-#define CLIENTID    "ExampleClientPub"
-#define TOPIC       "MQTT Examples"
-#define PAYLOAD     "Hello World!"
-#define QOS         1
-#define TIMEOUT     10000L
+#define ADDRESS "tcp://192.168.1.10:1883"
+#define CLIENTID "mqtt2dmx"
+#define TOPIC "dmx/channel/#"
 
-int main(int argc, char* argv[])
+void onReceived(MQTTMessage *message)
 {
-    MQTTClient client;
-    MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
-    MQTTClient_message pubmsg = MQTTClient_message_initializer;
-    MQTTClient_deliveryToken token;
-    int rc;
+    // TODO map topic
 
-    MQTTClient_create(&client, ADDRESS, CLIENTID,
-        MQTTCLIENT_PERSISTENCE_NONE, NULL);
-    conn_opts.keepAliveInterval = 20;
-    conn_opts.cleansession = 1;
+    int value; 
+    sscanf(message->payload, "%d", &value);
+    
+    DMX_SetValueForChannel(10, (unsigned char)value);
 
-    if ((rc = MQTTClient_connect(client, &conn_opts)) != MQTTCLIENT_SUCCESS)
+    MQTT_free(message);
+}
+
+int main(int argc, char *argv[])
+{
+    DMX_Initialize();
+    MQTT_Start(ADDRESS, CLIENTID, TOPIC, onReceived);
+
+    for(;;)
     {
-        printf("Failed to connect, return code %d\n", rc);
-        exit(-1);
+        DMX_Loop();
     }
 
-    if ((rc = MQTTClient_subscribe(client, "dmx/set/channels/#", 0)) != MQTTCLIENT_SUCCESS)
-    {
-        printf("Failed to subscribe, return code %d\n", rc);
-        exit(-1);
-    }
-
-    pubmsg.payload = PAYLOAD;
-    pubmsg.payloadlen = strlen(PAYLOAD);
-    pubmsg.qos = QOS;
-    pubmsg.retained = 0;
-    MQTTClient_publishMessage(client, TOPIC, &pubmsg, &token);
-    printf("Waiting for up to %d seconds for publication of %s\n"
-            "on topic %s for client with ClientID: %s\n",
-            (int)(TIMEOUT/1000), PAYLOAD, TOPIC, CLIENTID);
-    rc = MQTTClient_waitForCompletion(client, token, TIMEOUT);
-    printf("Message with delivery token %d delivered\n", token);
-
-    /* receive any outstanding messages */
-    MQTTClient_message* m = NULL;
-	char* topicName = NULL;
-	int topicLen;    
-	MQTTClient_receive(client, &topicName, &topicLen, &m, 20000);
-	while (topicName)
-	{
-		printf("Message received on topic %s is %.*s.\n", topicName, m->payloadlen, (char*)(m->payload));
-		MQTTClient_free(topicName);
-		MQTTClient_freeMessage(&m);
-		MQTTClient_receive(client, &topicName, &topicLen, &m, 20000);
-	}
-
-
-    MQTTClient_disconnect(client, 10000);
-    MQTTClient_destroy(&client);
-    return rc;
+    return EXIT_SUCCESS;    
 }
