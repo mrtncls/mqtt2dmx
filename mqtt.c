@@ -19,19 +19,17 @@ MQTT_Received *callback;
 
 void onSubscribed(void *context, MQTTAsync_successData *response)
 {
-    printf("Subscribe succeeded\n");
+    printf("Subscribed to topic %s\n", mqtt_topic);
 }
 
 void onSubscribeFailed(void *context, MQTTAsync_failureData *response)
 {
-    printf("Subscribe failed, rc %d\n", response ? response->code : 0);
+    printf("Subscribe to topic %s failed, rc %d\n", mqtt_topic, response ? response->code : 0);
     exit(EXIT_FAILURE);
 }
 
 void Subscribe()
 {
-    printf("Subscribing to topic %s\nfor client %s using QoS%d\n\n", mqtt_topic, CLIENTID, QOS);
-
     int rc;
     MQTTAsync_responseOptions opts = MQTTAsync_responseOptions_initializer;
     opts.onSuccess = onSubscribed;
@@ -47,8 +45,6 @@ void Subscribe()
 void onConnected(void *context, MQTTAsync_successData *response)
 {
     MQTTAsync client = (MQTTAsync)context;
-
-    printf("Successful connection\n");
 
     Subscribe();
 }
@@ -127,18 +123,9 @@ void onConnectionLost(void *context, char *cause)
 
 int onMessageArrived(void *context, char *topicName, int topicLen, MQTTAsync_message *message)
 {
-    printf("Message received on topic %s is %.*s.\n", topicName, message->payloadlen, (char *)(message->payload));
+    // printf("Message received on topic %s is %.*s.\n", topicName, message->payloadlen, (char *)(message->payload));
 
-    MQTTMessage *result = malloc(sizeof(MQTTMessage));
-    
-    result->payload = malloc(message->payloadlen + 1);
-    memcpy(result->payload, message->payload, message->payloadlen);
-    result->payload[message->payloadlen] = NULL;
-
-    result->topic = malloc(topicLen + 1);
-    memcpy(result->topic, topicName, topicLen);
-    result->topic[topicLen] = NULL;
-
+    MQTTMessage *result = MQTT_CreateMessage(topicName, topicLen, message->payload, message->payloadlen);
     (*callback)(result);
 
     MQTTAsync_freeMessage(&message);
@@ -147,8 +134,28 @@ int onMessageArrived(void *context, char *topicName, int topicLen, MQTTAsync_mes
     return 1;
 }
 
+void onSent(void *context, MQTTAsync_successData *response)
+{
+    MQTTMessage *message = (MQTTMessage *)context;
+
+    MQTT_Free(message);
+}
+
+void onSendFailed(void *context, MQTTAsync_failureData *response)
+{
+    MQTTMessage *message = (MQTTMessage *)context;
+
+    printf("Send failed, rc %d\n", response ? response->code : 0);
+
+    MQTT_Free(message);
+
+    exit(EXIT_FAILURE);
+}
+
 void MQTT_Start(char *address, char *client_id, char *topic, MQTT_Received *received_callback)
 {
+    printf("Connecting MQTT... broker=%s id=%s\n", address, client_id);
+
     callback = received_callback;
     mqtt_topic = topic;
 
@@ -164,9 +171,45 @@ void MQTT_Stop()
     Disconnect();
 }
 
-void MQTT_free(MQTTMessage* message)
+MQTTMessage* MQTT_CreateMessage(char *topic, int topicLen, char *payload, int payloadLen)
+{
+    MQTTMessage *result = malloc(sizeof(MQTTMessage));
+    
+    result->topic = malloc(topicLen + 1);
+    memcpy(result->topic, topic, topicLen);
+    result->topic[topicLen] = '\0';
+
+    result->payload = malloc(payloadLen + 1);
+    memcpy(result->payload, payload, payloadLen);
+    result->payload[payloadLen] = '\0';
+
+    return result;
+}
+
+void MQTT_Free(MQTTMessage* message)
 {
     free(message->payload);
     free(message->topic);
     free(message);
+}
+
+void MQTT_PublishAndFree(MQTTMessage* message)
+{
+	MQTTAsync_message pubmsg = MQTTAsync_message_initializer;
+	pubmsg.payload = message->payload;
+	pubmsg.payloadlen = (int)strlen(message->payload);
+	pubmsg.qos = QOS;
+	pubmsg.retained = 0;
+
+	MQTTAsync_responseOptions opts = MQTTAsync_responseOptions_initializer;
+	opts.onSuccess = onSent;
+	opts.onFailure = onSendFailed;
+	opts.context = message;
+
+	int rc;
+	if ((rc = MQTTAsync_sendMessage(client, message->topic, &pubmsg, &opts)) != MQTTASYNC_SUCCESS)
+	{
+		printf("Failed to start sendMessage, return code %d\n", rc);
+		exit(EXIT_FAILURE);
+	}
 }

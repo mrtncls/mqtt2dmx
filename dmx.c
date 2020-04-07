@@ -40,7 +40,7 @@ void DMX_Loop()
         if (packet[i] != last_packet[i])
         {
             packet_changed = true;
-            printf("Channel %u: %u\n", i, packet[i]);
+            printf("DMX channel %u: %u\n", i, packet[i]);
         }
     }
     if (packet_changed)
@@ -56,6 +56,5 @@ void DMX_Loop()
 
 void DMX_SetValueForChannel(unsigned char channel, unsigned char value)
 {
-    printf("Setting DMX channel %u to %u\n", channel, value);
     packet[channel] = value;
 }

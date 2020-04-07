@@ -1,16 +1,15 @@
 # MQTT to FTDI DMX gateway
 
-## Links
+docker run --name mqtt2dmx --rm --privileged -v /dev/bus/usb:/dev/bus/usb -e MQTT_ADDRESS=192.168.1.10:1883 mrtncls/mqtt2dmx
 
-https://www.eclipse.org/paho/files/mqttdoc/MQTTClient/html/_m_q_t_t_client_8h.html#a4c2df88d00a3dadd510a8cb774739366
-https://www.eclipse.org/paho/clients/c/
-https://bismog.github.io/2019/02/23/play-with-paho-mqtt-c.html
+## Environment variables
 
-## Build and run
+MQTT_ADDRESS: required
+MQTT_CLIENTID: optional, default mqtt2dmx
+MQTT_TOPIC: optional, default dmx/channels/+/set
 
-make run
+## MQTT topic
 
-## Dev environment
-
-vscode on win10
-wsl debian (see https://code.visualstudio.com/docs/cpp/config-wsl)
+Publish message to dmx/channels/16/set with payload 199.
+A dmx frame with value 199 will be send to channel 16.
+A confirmation will be published to dmx/channels/16 with payload 199.
