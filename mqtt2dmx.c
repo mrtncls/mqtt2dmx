@@ -24,15 +24,12 @@ void subscribe_signals()
     signal(SIGTERM, handle_signal);
 }
 
-void publish(char *topic_to_truncate, int value)
+void publish(char *topic, int value)
 {
-    char *channel_topic_end = strrchr(topic_to_truncate, '/');
-    int topic_length = channel_topic_end - topic_to_truncate;
-
     char value_str[4];
     sprintf(value_str, "%d", value);
 
-    MQTTMessage *to_send = MQTT_CreateMessage(topic_to_truncate, topic_length, value_str, strlen(value_str));
+    MQTTMessage *to_send = MQTT_CreateMessage(topic, strlen(topic), value_str, strlen(value_str));
     MQTT_PublishAndFree(to_send);
 }
 
