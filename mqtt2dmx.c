@@ -97,6 +97,9 @@ void onReceived(MQTTMessage *message)
 
 int main(int argc, char *argv[])
 {
+    // Disable stdout buffering
+    setvbuf(stdout, NULL, _IONBF, 0);
+
     char *mqtt_address = getenv("MQTT_ADDRESS");
     if (mqtt_address == NULL)
     {
