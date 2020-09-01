@@ -19,12 +19,12 @@ MQTT_Received *callback;
 
 void onSubscribed(void *context, MQTTAsync_successData *response)
 {
-    printf("Subscribed to topic %s\n", mqtt_topic);
+    printf("MQTT subscribed to topic %s\n", mqtt_topic);
 }
 
 void onSubscribeFailed(void *context, MQTTAsync_failureData *response)
 {
-    printf("Subscribe to topic %s failed, rc %d\n", mqtt_topic, response ? response->code : 0);
+    printf("MQTT subscribe to topic %s failed, rc %d\n", mqtt_topic, response ? response->code : 0);
     exit(EXIT_FAILURE);
 }
 
@@ -37,7 +37,7 @@ void Subscribe()
     opts.context = client;
     if ((rc = MQTTAsync_subscribe(client, mqtt_topic, QOS, &opts)) != MQTTASYNC_SUCCESS)
     {
-        printf("Failed to start subscribe, return code %d\n", rc);
+        printf("MQTT failed to start subscribe, return code %d\n", rc);
         exit(EXIT_FAILURE);
     }
 }
@@ -46,19 +46,21 @@ void onConnected(void *context, MQTTAsync_successData *response)
 {
     MQTTAsync client = (MQTTAsync)context;
 
+    printf("MQTT connected to %s using version %d\n", response->alt.connect.serverURI, response->alt.connect.MQTTVersion);
+
     Subscribe();
 }
 
 void onConnectFailed(void *context, MQTTAsync_failureData *response)
 {
-    printf("Connect failed, rc %d\n", response ? response->code : 0);
-    exit(EXIT_FAILURE);
+    printf("MQTT connect failed, rc %d\n", response ? response->code : 0);
 }
 
 int Connect()
 {
     int rc;
     MQTTAsync_connectOptions conn_opts = MQTTAsync_connectOptions_initializer;
+    conn_opts.automaticReconnect = 1;
     conn_opts.keepAliveInterval = 20;
     conn_opts.cleansession = 1;
     conn_opts.onSuccess = onConnected;
@@ -66,28 +68,28 @@ int Connect()
     conn_opts.context = client;
     if ((rc = MQTTAsync_connect(client, &conn_opts)) != MQTTASYNC_SUCCESS)
     {
-        printf("Failed to start connect, return code %d\n", rc);
+        printf("MQTT broker connect failed, return code %d\n", rc);
         exit(EXIT_FAILURE);
     }
 }
 
 void Destroy()
 {
-    printf("Destroying MQTT client\n");
+    printf("MQTT destroying client\n");
 
     MQTTAsync_destroy(&client);
 }
 
 void onDisconnected(void *context, MQTTAsync_successData *response)
 {
-    printf("Successful disconnection\n");
+    printf("MQTT successful disconnected\n");
 
     Destroy();
 }
 
 void onDisconnectFailed(void *context, MQTTAsync_failureData *response)
 {
-    printf("Disconnect failed, rc %d\n", response ? response->code : 0);
+    printf("MQTT disconnect failed, rc %d\n", response ? response->code : 0);
 
     Destroy();
 
@@ -102,7 +104,7 @@ int Disconnect()
     disc_opts.onFailure = onDisconnectFailed;
     if ((rc = MQTTAsync_disconnect(client, &disc_opts)) != MQTTASYNC_SUCCESS)
     {
-        printf("Failed to start disconnect, return code %d\n", rc);
+        printf("MQTT broker disconnect failed, return code %d\n", rc);
         exit(EXIT_FAILURE);
     }
     return EXIT_SUCCESS;
@@ -112,11 +114,11 @@ void onConnectionLost(void *context, char *cause)
 {
     MQTTAsync client = (MQTTAsync)context;
 
-    printf("\nConnection lost\n");
+    printf("MQTT connection lost\n");
     if (cause)
         printf("     cause: %s\n", cause);
 
-    printf("Reconnecting...\n");
+    printf("MQTT reconnecting...\n");
 
     Connect();
 }
@@ -145,7 +147,7 @@ void onSendFailed(void *context, MQTTAsync_failureData *response)
 {
     MQTTMessage *message = (MQTTMessage *)context;
 
-    printf("Send failed, rc %d\n", response ? response->code : 0);
+    printf("MQTT send failed, rc %d\n", response ? response->code : 0);
 
     MQTT_Free(message);
 
@@ -154,7 +156,7 @@ void onSendFailed(void *context, MQTTAsync_failureData *response)
 
 void MQTT_Start(char *address, char *client_id, char *topic, MQTT_Received *received_callback)
 {
-    printf("Connecting MQTT... broker=%s id=%s\n", address, client_id);
+    printf("MQTT starting... broker=%s topic=%s id=%s\n", address, topic, client_id);
 
     callback = received_callback;
     mqtt_topic = topic;
@@ -209,7 +211,7 @@ void MQTT_PublishAndFree(MQTTMessage* message)
 	int rc;
 	if ((rc = MQTTAsync_sendMessage(client, message->topic, &pubmsg, &opts)) != MQTTASYNC_SUCCESS)
 	{
-		printf("Failed to start sendMessage, return code %d\n", rc);
+		printf("MQTT failed to start sendMessage, return code %d\n", rc);
 		exit(EXIT_FAILURE);
 	}
 }
