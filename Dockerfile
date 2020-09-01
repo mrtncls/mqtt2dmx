@@ -1,28 +1,22 @@
-  
-FROM alpine:latest AS build
+FROM alpine:3.12.0 AS build
 WORKDIR /src
 COPY . .
-RUN apk update && apk add --no-cache \
-    git \
-    gcc \
-    make \
-    libc-dev \
+RUN apk add --no-cache \
+    alpine-sdk \
     libftdi1-dev \
-    openssl-dev \
-    pkgconfig
+    openssl-dev
 
 # Build mqtt lib
-RUN git clone https://github.com/eclipse/paho.mqtt.c.git
+RUN git clone --depth 1 --branch v1.3.1 https://github.com/eclipse/paho.mqtt.c.git
 RUN mkdir -p /usr/local/share/man/man1
 RUN mkdir -p /usr/local/share/man/man3
 RUN cd paho.mqtt.c && make install
 
 RUN make
 
-FROM alpine:latest AS runtime
+FROM alpine:3.12.0 AS runtime
 COPY --from=build /src/mqtt2dmx /bin/mqtt2dmx
 COPY --from=build /usr/local/lib/libpaho* /usr/local/lib/
-RUN apk update
 RUN apk add \
     libftdi1 \
     openssl
