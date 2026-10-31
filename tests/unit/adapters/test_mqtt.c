@@ -23,6 +23,10 @@ static MQTTAsync_message *received_paho_message;
 static int received_count;
 static bool inside_callback;
 static MQTT_Received *consumer_callback;
+static bool expect_will;
+static bool will_seen;
+static bool subscriptions_match;
+static int retained_seen, subscribed_count;
 
 static void consumer(MQTTMessage *message);
 
@@ -38,11 +42,29 @@ void setUp(void)
     received_count = 0;
     inside_callback = false;
     consumer_callback = consumer;
+    expect_will = false;
+    will_seen = false;
+    retained_seen = -1;
+    subscribed_count = 0;
+    subscriptions_match = true;
     memset(&connect_options, 0, sizeof(connect_options));
     memset(&subscribe_options, 0, sizeof(subscribe_options));
     memset(&send_options, 0, sizeof(send_options));
     memset(&disconnect_options, 0, sizeof(disconnect_options));
     watch_frees(NULL, 0);
+}
+
+static int capture_light_connect(MQTTAsync actual, const MQTTAsync_connectOptions *options, int calls)
+{
+    connect_options = *options;
+    if (!options->will)
+        return MQTTASYNC_SUCCESS;
+    will_seen = true;
+    TEST_ASSERT_EQUAL_STRING("house/availability", options->will->topicName);
+    TEST_ASSERT_EQUAL_STRING("offline", options->will->message);
+    TEST_ASSERT_EQUAL_INT(1, options->will->retained);
+    TEST_ASSERT_EQUAL_INT(0, options->will->qos);
+    return MQTTASYNC_SUCCESS;
 }
 
 void tearDown(void)
@@ -115,6 +137,8 @@ static int capture_callbacks(MQTTAsync actual, void *context,
 static int capture_connect(MQTTAsync actual, const MQTTAsync_connectOptions *options,
                            int calls)
 {
+    if (expect_will)
+        capture_light_connect(actual, options, calls);
     connect_options = *options;
     TEST_ASSERT_EQUAL_INT(1, options->automaticReconnect);
     TEST_ASSERT_EQUAL_INT(20, options->keepAliveInterval);
@@ -122,6 +146,15 @@ static int capture_connect(MQTTAsync actual, const MQTTAsync_connectOptions *opt
     TEST_ASSERT_NULL(options->onSuccess);
     TEST_ASSERT_NOT_NULL(options->onFailure);
     return MQTTASYNC_SUCCESS;
+}
+
+static int count_light_subscriptions(MQTTAsync actual, const char *topic, int qos,
+                                     MQTTAsync_responseOptions *options, int calls)
+{
+    const char *filters[] = {"dmx/channels/+/set", "house/lights/+/set", "ha/status"};
+    subscriptions_match = subscriptions_match && !strcmp(filters[subscribed_count % 3], topic);
+    subscribed_count++;
+    return 0;
 }
 
 static int capture_connected(MQTTAsync actual, void *context, MQTTAsync_connected *co, int calls)
@@ -634,6 +667,146 @@ void test_given_lost_connection_when_reconnect_succeeds_then_resubscribes_to_con
     mock_paho_api_Verify();
 }
 
+void test_given_light_interface_when_connecting_then_configures_retained_offline_will(void)
+{
+    // Given (Arrange)
+    expect_will = true;
+    // When (Act)
+    TEST_ASSERT_EQUAL_INT(EXIT_SUCCESS,
+        MQTT_SetInterface("house/lights/+/set", "ha/status", "house/availability"));
+    start_client();
+    MQTTAsync_destroy_Ignore();
+    MQTT_Close();
+    // Then (Assert)
+    TEST_ASSERT_TRUE(will_seen);
+    mock_paho_api_Verify();
+}
+
+void test_given_light_interface_when_reconnecting_then_resubscribes_all_and_updates_epoch(void)
+{
+    // Given (Arrange)
+    MQTT_SetInterface("house/lights/+/set", "ha/status", "house/availability");
+    start_client();
+    MQTTAsync_subscribe_Stub(count_light_subscriptions);
+    connected(NULL, NULL);
+    MQTT_Poll();
+    unsigned int epoch = MQTT_ConnectionEpoch();
+    // When (Act)
+    lost(NULL, "test");
+    bool offline = !MQTT_IsConnected();
+    connected(NULL, NULL);
+    MQTT_Poll();
+    bool online = MQTT_IsConnected();
+    unsigned int new_epoch = MQTT_ConnectionEpoch();
+    MQTTAsync_destroy_Ignore();
+    MQTT_Close();
+    // Then (Assert)
+    TEST_ASSERT_TRUE(offline);
+    TEST_ASSERT_TRUE(online);
+    TEST_ASSERT_EQUAL_UINT(epoch + 1, new_epoch);
+    TEST_ASSERT_EQUAL_INT(6, subscribed_count);
+    TEST_ASSERT_TRUE(subscriptions_match);
+    mock_paho_api_Verify();
+}
+
+static int capture_retained(MQTTAsync actual, const char *topic, const MQTTAsync_message *message,
+                            MQTTAsync_responseOptions *options, int calls)
+{
+    retained_seen = message->retained;
+    TEST_ASSERT_EQUAL_INT(0, message->qos);
+    send_options = *options;
+    return 0;
+}
+
+void test_given_retained_snapshot_when_published_then_tracks_completion_and_releases_owned_message(void)
+{
+    // Given (Arrange)
+    start_client();
+    MQTTMessage *message = MQTT_CreateMessage("state", 5, "{}", 2);
+    message->retained = true;
+    MQTTAsync_sendMessage_ExpectAndReturn(handle, "state", NULL, NULL, 0);
+    MQTTAsync_sendMessage_IgnoreArg_msg();
+    MQTTAsync_sendMessage_IgnoreArg_response();
+    MQTTAsync_sendMessage_AddCallback(capture_retained);
+    // When (Act)
+    int status = MQTT_PublishAndFree(message);
+    size_t pending = MQTT_PublicationsPending();
+    send_options.onSuccess(send_options.context, NULL);
+    size_t remaining = MQTT_PublicationsPending();
+    MQTTAsync_destroy_Ignore();
+    MQTT_Close();
+    // Then (Assert)
+    TEST_ASSERT_EQUAL_INT(EXIT_SUCCESS, status);
+    TEST_ASSERT_EQUAL_INT(1, retained_seen);
+    TEST_ASSERT_EQUAL_UINT(1, pending);
+    TEST_ASSERT_EQUAL_UINT(0, remaining);
+}
+
+static int capture_offline(MQTTAsync actual, const char *topic, const MQTTAsync_message *message,
+                            MQTTAsync_responseOptions *options, int calls)
+{
+    TEST_ASSERT_EQUAL_STRING("house/availability", topic);
+    TEST_ASSERT_EQUAL_STRING("offline", message->payload);
+    return capture_retained(actual, topic, message, options, calls);
+}
+
+void test_given_online_light_interface_when_stopping_then_drains_offline_before_disconnect(void)
+{
+    // Given (Arrange)
+    MQTT_SetInterface("house/lights/+/set", NULL, "house/availability");
+    start_client();
+    connected(NULL, NULL);
+    MQTTAsync_sendMessage_Stub(capture_offline);
+    MQTTAsync_disconnect_IgnoreAndReturn(0);
+    // When (Act)
+    int status = MQTT_Stop();
+    size_t pending = MQTT_PublicationsPending();
+    MQTTAsync_destroy_Ignore();
+    MQTT_Close();
+    // Then (Assert)
+    TEST_ASSERT_EQUAL_INT(EXIT_SUCCESS, status);
+    TEST_ASSERT_EQUAL_UINT(1, pending);
+    mock_paho_api_Verify();
+}
+
+void test_given_loss_before_owner_subscription_when_polled_then_waits_for_reconnect(void)
+{
+    // Given (Arrange)
+    start_client();
+    connected(NULL, NULL);
+    lost(NULL, "before owner poll");
+    MQTTAsync_subscribe_Stub(count_light_subscriptions);
+    // When (Act)
+    int status = MQTT_Poll();
+    bool offline = !MQTT_IsConnected();
+    MQTTAsync_destroy_Ignore();
+    MQTT_Close();
+    // Then (Assert)
+    TEST_ASSERT_EQUAL_INT(EXIT_SUCCESS, status);
+    TEST_ASSERT_TRUE(offline);
+    TEST_ASSERT_EQUAL_INT(0, subscribed_count);
+    mock_paho_api_Verify();
+}
+
+void test_given_established_disconnected_client_when_stopped_then_closes_without_offline_send_or_disconnect(void)
+{
+    // Given (Arrange)
+    MQTT_SetInterface("house/lights/+/set", NULL, "house/availability");
+    start_client();
+    connected(NULL, NULL);
+    lost(NULL, "test");
+    MQTTAsync_destroy_Ignore();
+    MQTTAsync_disconnect_IgnoreAndReturn(0);
+    // When (Act)
+    int status = MQTT_Stop();
+    bool closed = MQTT_IsClosed();
+    MQTT_Close();
+    // Then (Assert)
+    TEST_ASSERT_EQUAL_INT(EXIT_SUCCESS, status);
+    TEST_ASSERT_TRUE(closed);
+    mock_paho_api_Verify();
+}
+
 static void count_message(MQTTMessage *message)
 {
     received_count++;
@@ -694,9 +867,9 @@ void test_given_saturated_queue_when_another_message_arrives_then_reports_failur
     TEST_ASSERT_EQUAL_INT(0, received_count);
 }
 
-TEST_CASE(1024, 64, 0)
-TEST_CASE(1025, 64, 1)
-TEST_CASE(1024, 65, 1)
+TEST_CASE(1024, 512, 0)
+TEST_CASE(1025, 512, 1)
+TEST_CASE(1024, 513, 1)
 TEST_CASE(-1, 1, 1)
 TEST_CASE(1, -1, 1)
 void test_given_message_length_limits_when_arriving_then_accepts_boundaries_and_rejects_excess(
@@ -705,7 +878,7 @@ void test_given_message_length_limits_when_arriving_then_accepts_boundaries_and_
     // Given (Arrange)
     consumer_callback = count_message;
     start_client();
-    char topic[1026], payload[66];
+    char topic[1026], payload[514];
     memset(topic, 't', sizeof(topic));
     topic[1025] = '\0';
     memset(payload, '1', sizeof(payload));

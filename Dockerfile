@@ -2,6 +2,7 @@ FROM ruby:3.3.6-bookworm@sha256:347edd0c70ee08d87de9f01b99de2f14a64cedb5d1bfb384
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libftdi1-dev=1.5-6+b2 \
+    libjansson-dev=2.14-2 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 --branch v1.3.1 \
@@ -24,6 +25,7 @@ WORKDIR /src
 RUN apk add --no-cache \
     alpine-sdk \
     libftdi1-dev \
+    jansson-dev \
     openssl-dev
 
 # Build mqtt lib
@@ -43,6 +45,7 @@ COPY --from=build /src/mqtt2dmx /bin/mqtt2dmx
 COPY --from=build /usr/local/lib/libpaho* /usr/local/lib/
 RUN apk add \
     libftdi1 \
+    jansson \
     openssl
 # EXPOSE 6454/udp
 CMD ["/bin/mqtt2dmx"]

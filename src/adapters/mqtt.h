@@ -6,7 +6,7 @@
 
 #define MQTT_QUEUE_CAPACITY 64
 #define MQTT_TOPIC_LIMIT 1024
-#define MQTT_PAYLOAD_LIMIT 64
+#define MQTT_PAYLOAD_LIMIT 512
 #define MQTT_DRAIN_BUDGET 16
 
 typedef struct MQTTMessage
@@ -15,6 +15,7 @@ typedef struct MQTTMessage
     char *payload;
     size_t topic_length;
     size_t payload_length;
+    bool retained;
     struct MQTTMessage *next;
 } MQTTMessage;
 
@@ -32,5 +33,10 @@ bool MQTT_IsClosed(void);
 bool MQTT_HasFailed(void);
 void MQTT_Close(void);
 int MQTT_PublishAndFree(MQTTMessage *message);
+/* Interface topic storage must outlive the client. Configure only while closed. */
+int MQTT_SetInterface(const char *light_filter, const char *birth_topic, const char *availability_topic);
+bool MQTT_IsConnected(void);
+unsigned int MQTT_ConnectionEpoch(void);
+size_t MQTT_PublicationsPending(void);
 
 #endif

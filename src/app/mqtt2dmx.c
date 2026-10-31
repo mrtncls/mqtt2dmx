@@ -3,6 +3,8 @@
 #include "dmx.h"
 #include "mqtt.h"
 #include "shutdown.h"
+#include "ha.h"
+#include "clock.h"
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,12 +15,38 @@
 static LightState lights;
 static bool command_failed;
 static volatile sig_atomic_t stopping;
+static HomeAssistant ha;
+static GatewayConfig configuration;
+static uint64_t frame_time;
+static char light_filter[HA_TOPIC_LIMIT], availability[HA_TOPIC_LIMIT];
+
+int Application_Configure(const GatewayConfig *config)
+{
+    HA_Initialize(&ha, config);
+    snprintf(light_filter, sizeof(light_filter), "%s/lights/+/set", config->prefix);
+    snprintf(availability, sizeof(availability), "%s/availability", config->prefix);
+    return MQTT_SetInterface(light_filter, config->discovery ? config->birth_topic : NULL, availability);
+}
+
+int Application_Poll(void)
+{
+    if (stopping)
+        return EXIT_SUCCESS;
+    if (ha.config && Clock_Now(&frame_time) != EXIT_SUCCESS)
+        return EXIT_FAILURE;
+    int status = MQTT_Poll();
+    if (status != EXIT_SUCCESS || command_failed)
+        return EXIT_FAILURE;
+    return stopping ? EXIT_SUCCESS : HA_Service(&ha);
+}
 
 void Application_Reset(void)
 {
     stopping = 0;
     command_failed = false;
     Lights_Initialize(&lights);
+    HA_Initialize(&ha, NULL);
+    frame_time = 0;
 }
 
 bool Application_IsStopping(void)
@@ -30,11 +58,17 @@ int Application_WriteFrame(void)
 {
     if (command_failed)
         return EXIT_FAILURE;
+    if (stopping)
+        return EXIT_SUCCESS;
+    if (!HA_Render(&ha, &lights, frame_time))
+        return EXIT_FAILURE;
     DMXValue frame[DMX_FRAME_SIZE];
     Lights_Frame(&lights, frame);
-    return DMX_WriteFrame(frame);
+    int status = DMX_WriteFrame(frame);
+    if (status == EXIT_SUCCESS)
+        HA_Submitted(&ha);
+    return status;
 }
-
 void handle_signal(int sig)
 {
     stopping = 1;
@@ -43,6 +77,11 @@ void handle_signal(int sig)
 void onReceived(MQTTMessage *message)
 {
     if (Application_IsStopping() || command_failed)
+    {
+        MQTT_Free(message);
+        return;
+    }
+    if (HA_Receive(&ha, message, frame_time))
     {
         MQTT_Free(message);
         return;
@@ -60,6 +99,8 @@ void onReceived(MQTTMessage *message)
     }
     else
     {
+        HA_Raw(&ha, command.channel, command.value);
+        printf("Raw DMX channel %u: %u\n", command.channel, command.value);
         char value[4];
         size_t length = Command_FormatValue(command.value, value);
         MQTTMessage *confirmation = MQTT_CreateMessage(message->topic,
@@ -86,6 +127,11 @@ int main(int argc, char *argv[])
     if (!topic)
         topic = DEFAULT_MQTT_TOPIC;
     Application_Reset();
+    const char *config_path = getenv("LIGHTS_CONFIG");
+    if (config_path && (!Config_Load(config_path, &configuration) ||
+        !Config_ValidateSubscriptions(&configuration, topic) ||
+        Application_Configure(&configuration) != EXIT_SUCCESS))
+        return EXIT_FAILURE;
     int status = DMX_Initialize();
     if (status == EXIT_SUCCESS)
         status = MQTT_Start(address, client_id, topic, onReceived);
@@ -96,7 +142,7 @@ int main(int argc, char *argv[])
     }
     while (status == EXIT_SUCCESS && !stopping)
     {
-        status = MQTT_Poll();
+        status = Application_Poll();
         if (command_failed)
             status = EXIT_FAILURE;
         if (status != EXIT_SUCCESS || stopping)

@@ -333,7 +333,7 @@ static void write_repeated_and_changed_frames(void)
     TEST_ASSERT_EQUAL_INT(EXIT_SUCCESS, DMX_WriteFrame(frame));
 }
 
-void test_given_repeated_and_changed_frames_when_written_then_logs_only_changed_channel_values(void)
+void test_given_repeated_and_changed_frames_when_written_then_summarizes_without_per_channel_spam(void)
 {
     // Given (Arrange)
     initialize();
@@ -348,10 +348,39 @@ void test_given_repeated_and_changed_frames_when_written_then_logs_only_changed_
     mock_ftdi_api_Destroy();
     mock_delay_Destroy();
     assert_child_success(&result);
-    char *first = strstr(result.output, "DMX channel 255: 255\n");
-    char *cleared = strstr(result.output, "DMX channel 255: 0\n");
+    char *first = strstr(result.output, "DMX output updated: 1 changed channels");
     TEST_ASSERT_NOT_NULL(first);
-    TEST_ASSERT_NOT_NULL(cleared);
-    TEST_ASSERT_NULL(strstr(first + 1, "DMX channel 255: 255\n"));
-    TEST_ASSERT_NULL(strstr(cleared + 1, "DMX channel 255: 0\n"));
+    TEST_ASSERT_NULL(strstr(first + 1, "DMX output updated"));
+    TEST_ASSERT_NULL(strstr(result.output, "DMX channel"));
+}
+
+static void write_animation_frames(void)
+{
+    for (int i = 0; i < 257; i++)
+    {
+        frame[255] = expected_frame[255] = 1 + i % 2;
+        TEST_ASSERT_EQUAL_INT(EXIT_SUCCESS, DMX_WriteFrame(frame));
+    }
+    TEST_ASSERT_EQUAL_INT(257, frames_written);
+}
+
+void test_given_continuously_changing_frames_when_written_then_logs_only_once_per_256_changes(void)
+{
+    // Given (Arrange)
+    initialize();
+    ftdi_set_line_property2_IgnoreAndReturn(0);
+    usleep_IgnoreAndReturn(0);
+    ftdi_write_data_Stub(check_frame);
+    verify_child_before_exit(verify_dmx_mocks);
+    // When (Act)
+    struct child_result result = run_child(write_animation_frames);
+    // Then (Assert)
+    mock_ftdi_api_Destroy();
+    mock_delay_Destroy();
+    assert_child_success(&result);
+    char *first = strstr(result.output, "DMX output updated");
+    TEST_ASSERT_NOT_NULL(first);
+    char *second = strstr(first + 1, "DMX output updated");
+    TEST_ASSERT_NOT_NULL(second);
+    TEST_ASSERT_NULL(strstr(second + 1, "DMX output updated"));
 }

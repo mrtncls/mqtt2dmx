@@ -12,9 +12,15 @@
 
 TEST_SOURCE_FILE("mqtt2dmx.c")
 TEST_SOURCE_FILE("command.c")
+TEST_SOURCE_FILE("ha.c")
+TEST_SOURCE_FILE("ha_protocol.c")
+TEST_SOURCE_FILE("config.c")
+TEST_SOURCE_FILE("json_contract.c")
+TEST_SOURCE_FILE("transition.c")
+TEST_SOURCE_FILE("clock.c")
 
-static const char *env_names[] = {"MQTT_ADDRESS", "MQTT_CLIENTID", "MQTT_TOPIC"};
-static char *saved_env[3];
+static const char *env_names[] = {"MQTT_ADDRESS", "MQTT_CLIENTID", "MQTT_TOPIC", "LIGHTS_CONFIG"};
+static char *saved_env[4];
 static void (*saved_int)(int);
 static void (*saved_term)(int);
 static MQTTMessage incoming;
@@ -30,7 +36,7 @@ static int confirmed;
 
 void setUp(void)
 {
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 4; i++)
     {
         char *value = getenv(env_names[i]);
         saved_env[i] = value ? strdup(value) : NULL;
@@ -49,7 +55,7 @@ void tearDown(void)
 {
     signal(SIGINT, saved_int);
     signal(SIGTERM, saved_term);
-    for (int i = 0; i < 3; i++)
+    for (int i = 0; i < 4; i++)
     {
         if (saved_env[i])
             setenv(env_names[i], saved_env[i], 1);
@@ -164,6 +170,19 @@ void test_topic_without_channel_separator_is_released_without_output(void)
 void test_missing_address_fails_before_starting_dependencies(void)
 {
     TEST_ASSERT_EQUAL_INT(EXIT_FAILURE, mqtt2dmx_main(0, NULL));
+}
+
+void test_given_missing_light_config_when_starting_then_fails_before_opening_hardware(void)
+{
+    // Given (Arrange)
+    setenv("MQTT_ADDRESS", "tcp://test.invalid:1883", 1);
+    setenv("LIGHTS_CONFIG", "/tmp/mqtt2dmx-missing-lights.json", 1);
+    // When (Act)
+    int status = mqtt2dmx_main(0, NULL);
+    // Then (Assert)
+    TEST_ASSERT_EQUAL_INT(EXIT_FAILURE, status);
+    mock_dmx_Verify();
+    mock_mqtt_Verify();
 }
 
 static int stop_after_two_frames(const DMXValue *frame, int calls)

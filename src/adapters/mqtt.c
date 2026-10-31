@@ -20,6 +20,37 @@ static atomic_bool failure_pending;
 static atomic_bool disconnect_finished;
 static atomic_bool subscribe_pending;
 static atomic_bool connection_established;
+static atomic_bool online;
+static atomic_uint connection_epoch;
+static const char *light_topic, *birth_topic, *availability_topic;
+
+int MQTT_SetInterface(const char *light_filter, const char *birth_filter, const char *availability)
+{
+    if (client || !light_filter || !availability ||
+        strlen(light_filter) > MQTT_TOPIC_LIMIT || strlen(availability) > MQTT_TOPIC_LIMIT ||
+        (birth_filter && strlen(birth_filter) > MQTT_TOPIC_LIMIT))
+    {
+        fprintf(stderr, "Invalid MQTT light interface or client already started\n");
+        return EXIT_FAILURE;
+    }
+    light_topic = light_filter;
+    /* Retain caller-owned topic storage until Close, like the legacy subscription. */
+    birth_topic = birth_filter;
+    availability_topic = availability;
+    return EXIT_SUCCESS;
+}
+
+bool MQTT_IsConnected(void) { return atomic_load(&online); }
+unsigned int MQTT_ConnectionEpoch(void) { return atomic_load(&connection_epoch); }
+size_t MQTT_PublicationsPending(void)
+{
+    size_t count = 0;
+    pthread_mutex_lock(&lock);
+    for (MQTTMessage *message = outgoing; message; message = message->next)
+        count++;
+    pthread_mutex_unlock(&lock);
+    return count;
+}
 
 static void fail(const char *operation, int rc)
 {
@@ -29,7 +60,7 @@ static void fail(const char *operation, int rc)
 
 static void onSubscribed(void *context, MQTTAsync_successData *response)
 {
-    printf("MQTT subscribed to topic %s\n", mqtt_topic);
+    printf("MQTT subscription completed\n");
 }
 
 static void onSubscribeFailed(void *context, MQTTAsync_failureData *response)
@@ -40,6 +71,8 @@ static void onSubscribeFailed(void *context, MQTTAsync_failureData *response)
 static void onConnected(void *context, char *cause)
 {
     atomic_store(&connection_established, true);
+    atomic_fetch_add(&connection_epoch, 1);
+    atomic_store(&online, true);
     atomic_store(&subscribe_pending, true);
 }
 
@@ -54,6 +87,7 @@ static void onConnectFailed(void *context, MQTTAsync_failureData *response)
 
 static void onConnectionLost(void *context, char *cause)
 {
+    atomic_store(&online, false);
     printf("MQTT connection lost%s%s; Paho will reconnect\n",
            cause ? ": " : "", cause ? cause : "");
 }
@@ -88,6 +122,7 @@ static int onMessageArrived(void *context, char *topicName, int topicLen,
                                                    message->payload, message->payloadlen);
             if (copy)
             {
+                copy->retained = message->retained != 0;
                 queue[(queue_head + queue_count) % MQTT_QUEUE_CAPACITY] = copy;
                 queue_count++;
             }
@@ -144,6 +179,8 @@ void MQTT_Close(void)
         client = NULL;
     }
     lifecycle = CLOSED;
+    atomic_store(&online, false);
+    light_topic = birth_topic = availability_topic = NULL;
     pthread_mutex_lock(&lock);
     while (queue_count)
     {
@@ -177,6 +214,8 @@ int MQTT_Start(const char *address, const char *client_id, const char *topic,
     atomic_store(&disconnect_finished, false);
     atomic_store(&subscribe_pending, false);
     atomic_store(&connection_established, false);
+    atomic_store(&online, false);
+    atomic_store(&connection_epoch, 0);
     pthread_mutex_lock(&lock);
     accepting = true;
     pthread_mutex_unlock(&lock);
@@ -198,6 +237,15 @@ int MQTT_Start(const char *address, const char *client_id, const char *topic,
     options.keepAliveInterval = 20;
     options.cleansession = 1;
     options.onFailure = onConnectFailed;
+    MQTTAsync_willOptions will = MQTTAsync_willOptions_initializer;
+    if (availability_topic)
+    {
+        will.topicName = availability_topic;
+        will.message = "offline";
+        will.retained = 1;
+        will.qos = 0;
+        options.will = &will;
+    }
     operation = "connect";
     rc = MQTTAsync_connect(client, &options);
     if (rc != MQTTASYNC_SUCCESS)
@@ -221,7 +269,19 @@ int MQTT_Stop(void)
     }
     pthread_mutex_unlock(&lock);
     if (lifecycle == RUNNING)
+    {
+        if (availability_topic && MQTT_IsConnected() && !MQTT_HasFailed())
+        {
+            MQTTMessage *offline = MQTT_CreateMessage(availability_topic,
+                (int)strlen(availability_topic), "offline", 7);
+            if (!offline)
+                return EXIT_FAILURE;
+            offline->retained = true;
+            if (MQTT_PublishAndFree(offline) != EXIT_SUCCESS)
+                return EXIT_FAILURE;
+        }
         lifecycle = DRAINING;
+    }
     return MQTT_Poll();
 }
 
@@ -238,6 +298,11 @@ int MQTT_Poll(void)
         pthread_mutex_unlock(&lock);
         if (drained && lifecycle == DRAINING)
         {
+            if (atomic_load(&connection_established) && !MQTT_IsConnected())
+            {
+                MQTT_Close();
+                return MQTT_HasFailed() ? EXIT_FAILURE : EXIT_SUCCESS;
+            }
             lifecycle = DISCONNECTING;
             MQTTAsync_disconnectOptions options = MQTTAsync_disconnectOptions_initializer;
             options.onSuccess = onDisconnected;
@@ -250,14 +315,20 @@ int MQTT_Poll(void)
             MQTT_Close();
         return MQTT_HasFailed() ? EXIT_FAILURE : EXIT_SUCCESS;
     }
-    if (atomic_exchange(&subscribe_pending, false))
+    if (MQTT_IsConnected() && atomic_exchange(&subscribe_pending, false))
     {
-        MQTTAsync_responseOptions options = MQTTAsync_responseOptions_initializer;
-        options.onSuccess = onSubscribed;
-        options.onFailure = onSubscribeFailed;
-        int rc = MQTTAsync_subscribe(client, mqtt_topic, 0, &options);
-        if (rc != MQTTASYNC_SUCCESS)
-            fail("subscribe", rc);
+        const char *filters[] = {mqtt_topic, light_topic, birth_topic};
+        for (size_t i = 0; i < 3 && !MQTT_HasFailed(); i++)
+        {
+            if (!filters[i])
+                continue;
+            MQTTAsync_responseOptions options = MQTTAsync_responseOptions_initializer;
+            options.onSuccess = onSubscribed;
+            options.onFailure = onSubscribeFailed;
+            int rc = MQTTAsync_subscribe(client, filters[i], 0, &options);
+            if (rc != MQTTASYNC_SUCCESS)
+                fail("subscribe", rc);
+        }
     }
     for (size_t i = 0; i < MQTT_DRAIN_BUDGET && !MQTT_HasFailed(); i++)
     {
@@ -331,7 +402,7 @@ int MQTT_PublishAndFree(MQTTMessage *message)
     pubmsg.payload = message->payload;
     pubmsg.payloadlen = (int)message->payload_length;
     pubmsg.qos = 0;
-    pubmsg.retained = 0;
+    pubmsg.retained = message->retained;
     MQTTAsync_responseOptions options = MQTTAsync_responseOptions_initializer;
     options.onSuccess = onSent;
     options.onFailure = onSendFailed;

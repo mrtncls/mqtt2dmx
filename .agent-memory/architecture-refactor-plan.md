@@ -17,6 +17,12 @@ Phase 0 is complete and verified. Phases 1-3 pass the expanded Docker regression
 suite; final production-image verification is recorded below. Phases 4-6 remain
 proposed only.
 
+The remaining transition phases 4-5 and animation-related phase 6 verification
+are now tracked in the separate [LED transitions and animations plan](transitions-animation-plan.md).
+Use that plan for current MQTT/curve proposals and future transition decisions;
+the transition sections below remain historical context, not implementation
+approval. Unrelated operational/build hygiene remains in this architecture plan.
+
 Historical phase 0 acceptance criteria:
 
 - Production sources and internal headers live together under `src/`.
@@ -72,7 +78,7 @@ The deployed process is a small singleton executable, not a reusable library.
 The application combines protocol policy and lifecycle; MQTT combines transport,
 message allocation, callbacks, and connection state; DMX combines light state,
 frame generation, transport timing, hardware lifecycle, and logging.
-[Fatal cleanup](../src/shutdown.c) couples both adapters through global callbacks.
+[Fatal cleanup](../src/app/shutdown.c) couples both adapters through global callbacks.
 
 ### What is already working well
 
@@ -93,14 +99,14 @@ not a penetration test or a claim of hardware or concurrent-runtime verification
 
 | Priority | Evidence | Finding and consequence | Planned response |
 | --- | --- | --- | --- |
-| High | [DMX state/write](../src/dmx.c#L72), [setter](../src/dmx.c#L108), [delivery](../src/mqtt.c#L146) | Paho calls the application inline; the callback writes `packet` while the main thread reads it for FTDI, comparison, and copying. There is no synchronization. This is a C data race, not merely possible visual tearing. Adding an animation writer would compound it. | Main-thread ownership of light state and immutable-per-write frames; bounded synchronized handoff from callbacks. |
-| High | [normal exit](../src/mqtt2dmx.c#L117), [DMX cleanup](../src/dmx.c#L18) | One poll after asynchronous disconnect does not wait for completion. Normal exit never explicitly closes/deinitializes FTDI. Tests currently require the request, not completed cleanup. | Explicit stopping/draining/closed lifecycle, deadline, idempotent close operations, one application-owned exit path. |
-| High before animation | [DMX loop](../src/dmx.c#L72) | Frame transport, sleeps, state comparison, and logging share one blocking operation. There is no elapsed-time clock or scheduler. A fade implemented as sleeps or increments per loop would block commands or change duration with load. | Separate state evaluation and transport. Use monotonic elapsed time; preserve FTDI timing until separately measured and approved. |
-| Medium | [application globals](../src/mqtt2dmx.c#L11), [MQTT globals](../src/mqtt.c#L14), [test flags](../project.yml) | `mqtt_topic` has two tentative definitions and tests require `-fcommon`. Adapter globals and externally visible internal functions obscure ownership; tests reach into them. | One owner per state item, module-private implementation details, self-contained internal headers; then remove `-fcommon`. |
-| Medium | [DMX API](../src/dmx.h#L13), [parser](../src/mqtt2dmx.c#L36) | The 513-byte frame represents 512 slots, but the byte-sized channel API and parser allow only 1-255. Slot 0 can be changed by direct internal API use. | Distinct channel/value types and explicit slot validation; keep the existing external range until separately approved. |
-| Medium | [command handler](../src/mqtt2dmx.c#L53), [publication](../src/mqtt.c#L282) | Parsing, state mutation, confirmation formatting, and memory release are coupled. Confirmation is published after a buffer update, not after physical delivery; QoS 0/non-retained messages are not delivery guarantees. Animation would make "confirmed" ambiguous. | Pure command decoder, explicit command application, owned publication lifetime, separate acceptance/completion semantics for a future transition API. |
-| Medium | [reconnect](../src/mqtt.c#L74), [connection loss](../src/mqtt.c#L133), [poll](../src/mqtt.c#L222) | Manual reconnect and Paho automatic reconnect are both configured, with a clean session. Tests simulate callbacks sequentially. Atomics cover event flags, not all client/message lifecycle state. | Choose one reconnect owner and verify resubscription against real pinned Paho. Audit concurrent callback teardown and outstanding sends; do not assume flag deferral proves safe shutdown. |
-| Medium | [fatal shutdown](../src/shutdown.c#L7), [DMX check](../src/dmx.c#L35) | Adapters can terminate the process through global cleanup hooks. This makes lifecycle extension, recovery decisions, and ordinary unit testing difficult. | Adapters report errors; application coordinates cleanup and exit, preserving current fail-fast policy until explicitly changed. |
+| High | [DMX state/write](../src/adapters/dmx.c#L72), [setter](../src/adapters/dmx.c#L108), [delivery](../src/adapters/mqtt.c#L146) | Paho calls the application inline; the callback writes `packet` while the main thread reads it for FTDI, comparison, and copying. There is no synchronization. This is a C data race, not merely possible visual tearing. Adding an animation writer would compound it. | Main-thread ownership of light state and immutable-per-write frames; bounded synchronized handoff from callbacks. |
+| High | [normal exit](../src/app/mqtt2dmx.c#L117), [DMX cleanup](../src/adapters/dmx.c#L18) | One poll after asynchronous disconnect does not wait for completion. Normal exit never explicitly closes/deinitializes FTDI. Tests currently require the request, not completed cleanup. | Explicit stopping/draining/closed lifecycle, deadline, idempotent close operations, one application-owned exit path. |
+| High before animation | [DMX loop](../src/adapters/dmx.c#L72) | Frame transport, sleeps, state comparison, and logging share one blocking operation. There is no elapsed-time clock or scheduler. A fade implemented as sleeps or increments per loop would block commands or change duration with load. | Separate state evaluation and transport. Use monotonic elapsed time; preserve FTDI timing until separately measured and approved. |
+| Medium | [application globals](../src/app/mqtt2dmx.c#L11), [MQTT globals](../src/adapters/mqtt.c#L14), [test flags](../project.yml) | `mqtt_topic` has two tentative definitions and tests require `-fcommon`. Adapter globals and externally visible internal functions obscure ownership; tests reach into them. | One owner per state item, module-private implementation details, self-contained internal headers; then remove `-fcommon`. |
+| Medium | [DMX API](../src/adapters/dmx.h#L13), [parser](../src/app/mqtt2dmx.c#L36) | The 513-byte frame represents 512 slots, but the byte-sized channel API and parser allow only 1-255. Slot 0 can be changed by direct internal API use. | Distinct channel/value types and explicit slot validation; keep the existing external range until separately approved. |
+| Medium | [command handler](../src/app/mqtt2dmx.c#L53), [publication](../src/adapters/mqtt.c#L282) | Parsing, state mutation, confirmation formatting, and memory release are coupled. Confirmation is published after a buffer update, not after physical delivery; QoS 0/non-retained messages are not delivery guarantees. Animation would make "confirmed" ambiguous. | Pure command decoder, explicit command application, owned publication lifetime, separate acceptance/completion semantics for a future transition API. |
+| Medium | [reconnect](../src/adapters/mqtt.c#L74), [connection loss](../src/adapters/mqtt.c#L133), [poll](../src/adapters/mqtt.c#L222) | Manual reconnect and Paho automatic reconnect are both configured, with a clean session. Tests simulate callbacks sequentially. Atomics cover event flags, not all client/message lifecycle state. | Choose one reconnect owner and verify resubscription against real pinned Paho. Audit concurrent callback teardown and outstanding sends; do not assume flag deferral proves safe shutdown. |
+| Medium | [fatal shutdown](../src/app/shutdown.c#L7), [DMX check](../src/adapters/dmx.c#L35) | Adapters can terminate the process through global cleanup hooks. This makes lifecycle extension, recovery decisions, and ordinary unit testing difficult. | Adapters report errors; application coordinates cleanup and exit, preserving current fail-fast policy until explicitly changed. |
 | Medium | [test isolation](../tests/README.md#isolation-and-test-seams), [Dockerfile](../Dockerfile), [Makefile](../Makefile) | Strong deterministic regressions do not cover concurrency, actual reconnect, serial timing, or disconnect completion. Test and production toolchains differ; production uses an old Alpine base. `-Wall` is currently on the link command, and `make run` references an undefined `build` prerequisite. | Keep production linkage gating; separately plan warning/dependency/build hygiene and targeted integration checks rather than silently upgrading during relocation. |
 
 ### Timing and observability caveats
@@ -115,7 +121,7 @@ rate from mock delay assertions.
 
 ## Folder alignment
 
-Implemented layout:
+Historical phase 0 layout (superseded by the grouped layout below):
 
 ```text
 src/
@@ -134,7 +140,7 @@ Dockerfile  Makefile  project.yml  Gemfile  Gemfile.lock
 ```
 
 Headers stay with implementations because there is no public library interface.
-Keep the flat source layout until actual module growth justifies subdirectories;
+The phase 0 decision was to keep the flat source layout until actual module growth justified subdirectories;
 do not create empty `domain/`, `services/`, `interfaces/`, or `animations/` trees.
 Test runners stay in `tests/`, and build configuration stays at the root.
 The production binary location inside the image is unchanged.
@@ -145,6 +151,42 @@ As responsibilities are extracted, add concrete pairs such as `command.c/.h`,
 Extract a separate clock or command-queue module only when its implementation
 merits one. Retain `mqtt.c` and `dmx.c` as adapter names; renaming them is not
 necessary to create good boundaries.
+
+### Grouped source and test layout (2026-10-31)
+
+The user approved organizing the expanded modules by responsibility:
+`src/{app,adapters,config,lighting,protocol}`, mirrored by `tests/unit/`.
+Gateway and concurrent handoff suites move to `tests/integration/`, and harness
+self-tests to `tests/harness/`. Shared support/fakes and runner entry points stay
+where they are. Headers stay beside implementations; filenames and focused
+Ceedling selectors remain unchanged. The [repository layout](../README.md#repository-layout)
+is the current module map.
+
+Scope: relocation, build/discovery paths, compiler-wrapper entry-point detection,
+and directly related documentation only. No runtime changes, dependency upgrades,
+staging, commits, or hardware/broker execution. Preserve existing staged content.
+Acceptance: all 38 moved C/header files remain byte-for-byte identical; all 315
+baseline cases execute and pass; the production image compiles and links.
+
+Sequence: establish the Docker baseline, relocate files and update paths, then
+run the full regression gate and real-library production image build.
+Baseline: `docker build --target test -t mqtt2dmx-test:local .` followed by
+`docker run --rm --network none mqtt2dmx-test:local test:all` freshly passed
+315 cases, with zero failures or ignored tests. This is a behavior-preserving
+refactor, so no artificial red phase or new behavioral test is appropriate.
+Post-move verification:
+
+- All 38 moved files matched their original staged contents byte-for-byte using
+  `git show :<original-path> | cmp - <new-path>`. The index was not modified.
+- `docker build -t mqtt2dmx:local .` succeeded. The full gate freshly executed
+  315 tests: 315 passed, zero failed or ignored. All 12 production C modules
+  freshly compiled and linked against real Paho/FTDI/Jansson libraries; the
+  runtime image was produced. Dependency layers reused cache.
+- All relative documentation links in the changed documents resolved in a
+  network-disabled Docker check, and `git diff --check` passed.
+- Docker's existing recursive source copy required no change. No missing test
+  infrastructure or blockers were encountered. Runtime broker/hardware
+  verification was not performed because it was not approved.
 
 ## Proposed target architecture
 

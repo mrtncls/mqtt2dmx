@@ -10,6 +10,7 @@
 static struct ftdi_context ftdi;
 static DMXValue last_frame[DMX_FRAME_SIZE];
 static bool initialized, opened;
+static unsigned int changed_frames;
 
 int DMX_Close(void)
 {
@@ -53,6 +54,7 @@ int DMX_Initialize(void)
     if (initialized)
         return check(-1, "FTDI already initialized");
     memset(last_frame, 0, sizeof(last_frame));
+    changed_frames = 0;
     if (check(ftdi_init(&ftdi), "ftdi_init"))
         return EXIT_FAILURE;
     initialized = true;
@@ -87,9 +89,12 @@ int DMX_WriteFrame(const DMXValue frame[DMX_FRAME_SIZE])
     }
     if (delay(12000))
         return EXIT_FAILURE;
-    for (int i = 0; i < DMX_FRAME_SIZE; i++)
+    unsigned int changed = 0;
+    for (int i = 1; i < DMX_FRAME_SIZE; i++)
         if (frame[i] != last_frame[i])
-            printf("DMX channel %u: %u\n", i, frame[i]);
+            changed++;
+    if (changed && changed_frames++ % 256 == 0)
+        printf("DMX output updated: %u changed channels (summary every 256 changed frames)\n", changed);
     memcpy(last_frame, frame, sizeof(last_frame));
     return EXIT_SUCCESS;
 }

@@ -20,7 +20,7 @@ The approved contracts are:
   messages, received Paho buffers, MQTT clients, and initialized FTDI resources.
   Asynchronous connect failure is now required to terminate rather than only log.
 - Paho callbacks release Paho-owned buffers after copying into a synchronized
-  64-entry queue. Topic/payload limits are 1024/64 bytes; overflow or oversize
+  64-entry queue. Topic/payload limits are 1024/512 bytes; overflow or oversize
   is a visible fatal error, never a successful command. Only the main thread
   applies commands, at most 16 per frame. Frame snapshots remain stable.
 - Adapters return errors. The application owns cleanup and exit status. MQTT
@@ -60,7 +60,8 @@ reported individually. None are skipped.
 For focused suites or mounted-checkout testing, use the standalone `test` image
 and `docker run` commands in the [project README](../README.md). Focused selectors
 are `test:mqtt2dmx`, `test:mqtt`, `test:dmx`, `test:gateway`, `test:harness`,
-`test:command`, `test:lights`, `test:shutdown`, and `test:mqtt_concurrency`.
+`test:command`, `test:lights`, `test:shutdown`, `test:mqtt_concurrency`,
+`test:config`, `test:transition`, `test:ha_protocol`, `test:ha`, and `test:home_gateway`.
 Pass one selector per container invocation; use `test:all` for the complete suite.
 
 The [runner](run.rb) cleans generated output, propagates Ceedling failures, and
@@ -72,7 +73,8 @@ checkout. For standalone `docker run --rm` invocations without a mount, output
 is discarded with the container.
 
 The [Dockerfile's test stage](../Dockerfile) pins Ruby 3.3.6 by image digest, libftdi1
-development headers 1.5-6+b2, and Paho 1.3.1 by tag plus commit verification.
+development headers 1.5-6+b2, Jansson development headers 2.14-2, and Paho 1.3.1
+by tag plus commit verification.
 The [bundle lockfile](../Gemfile.lock) pins Ceedling 1.0.1 and its Ruby dependencies.
 That Ceedling release bundles CMock 2.6.0 and Unity 2.6.1. Build requires access
 to Docker Hub, Debian package repositories, GitHub, and RubyGems; test execution
@@ -81,10 +83,53 @@ and creates a success marker consumed by the production `build` stage. This
 dependency prevents Docker from skipping tests when building the runtime image.
 Unchanged inputs can reuse cached passing results. The standalone `test` target
 only prepares the environment and retains the runner entrypoint for focused or
-mounted-checkout testing. The Alpine production dependencies are unchanged;
-no Ruby tooling or test artifacts are copied into the runtime image.
+mounted-checkout testing. The existing Alpine production base and Paho dependency
+are unchanged; Jansson development/runtime packages are added for strict JSON.
+No Ruby tooling or test artifacts are copied into the runtime image.
+
+## Home Assistant and transition coverage
+
+| Suite | Contracts |
+| --- | --- |
+| [Configuration](unit/config/test_config.c) | Stable IDs, names, exact channel mapping, duplicate IDs/channels/keys, unsupported fields, type/range/bound checks, 255-light limit, file loading, custom prefixes, self-subscription rejection, explicit migration manifests |
+| [Transitions](unit/lighting/test_transition.c) | All 256 template brightness values, fractional off threshold, inverse calibration, both curves, ascending/descending, default versus explicit zero, elapsed time/late endpoints, retarget precision, maximum duration, equal targets, remembered brightness, raw overrides, submission-gated completion |
+| [HA protocol](unit/protocol/test_ha_protocol.c) | Actual HA JSON examples, optional-field rules, reordering/whitespace, invalid types/values, malformed/duplicate/NUL JSON, 512-byte input boundary, duration rounding, exact ID lookup, custom topics, escaped discovery names, full-length identity and worst-case 4096-byte output bounds |
+| [HA owner/scheduler](unit/app/test_ha.c) | Independent fades, calibrated frames, protected start code, raw/state reconciliation, startup ordering, single in-flight publication, coalescing, offline continuation, reconnect/birth refresh without restarting fades, explicit exact-topic cleanup with discovery disabled, offline removal retry, retained command rejection, fatal send status |
+| [Home gateway](integration/test_home_gateway.c) | Real application/MQTT/decoder/engine/scheduler with mocked Paho/DMX/clock: application timestamps, calibrated endpoints, legacy confirmation bytes and retention, logical reconciliation, queue drain budget between frames, offline fading, retained replay rejection, send/clock/frame failures and stop intent |
+| [MQTT](unit/adapters/test_mqtt.c) | Opt-in three-filter reconnect, retained offline will, retention flag forwarding, completion accounting, graceful offline draining, connection-loss-before-subscribe and disconnected shutdown |
+| [DMX](unit/adapters/test_dmx.c) | Unchanged transport sequencing and idle frames; changed-frame logging bounded to one summary per 256 changed frames, including a 257-frame deterministic run |
+
+Behavioral increments observed assertion failures before implementation, then
+passed their focused Docker suites. The saved
+[implementation plan](../.agent-memory/transitions-animation-plan.md) records
+red/green and final production-build evidence. Logging tests use constant-memory
+mock callbacks for the long run; other transport tests retain strict ordered
+expectations. No sleeps, real broker, USB device or privileged container is used.
+
+Final validation on 2026-10-31: `docker build -t mqtt2dmx:local .` freshly executed
+315 tests, all passing with none ignored. The production image built successfully;
+unchanged native compile/runtime layers reused the preceding successful real-library
+build. A network-disabled runtime `ldd` check resolved all shared libraries without
+starting the gateway. Documentation links and patch whitespace also passed checks.
+
+Mocks do not demonstrate HA entity registration, actual broker retention/restart
+behavior, USB frame cadence, physical endpoint timing or perceived smoothness.
+Those operational checks require explicitly approved broker/HA/device access.
+The deterministic timing gate is exact endpoint output on the first successful
+frame at/after the deadline, at most 16 input deliveries and one scheduled HA
+publication per frame. Physical timing/visual thresholds remain to be agreed.
 
 ## Test structure
+
+Module-focused suites live in `unit/`, mirroring the `app/`, `adapters/`,
+`config/`, `lighting/`, and `protocol/` source groups. Cross-module gateway and
+concurrent MQTT handoff suites live in `integration/`; they still use deterministic
+test doubles, not a live broker or hardware. Harness self-tests live in `harness/`.
+Shared helpers and mock declarations stay in `support/`, and the thread-safe Paho
+double stays in `fakes/`. The runner and compiler wrapper remain at this directory's
+root. Ceedling recursively discovers the three suite directories and `src/`.
+Keep basenames unique so existing `test:<module>` selectors and mock/source
+resolution remain unambiguous. Generated files belong only in ignored `build/`.
 
 Use `test_given_<context>_when_<action>_then_<outcome>` names and three
 clearly separated sections:
@@ -93,7 +138,7 @@ clearly separated sections:
 - `// When (Act)`: explicit calls exercising the behavior under test.
 - `// Then (Assert)`: observable outcomes and mock verification.
 
-[DMX tests](test_dmx.c) demonstrate this convention. Keep independent scenarios
+[DMX tests](unit/adapters/test_dmx.c) demonstrate this convention. Keep independent scenarios
 in separate tests. A setup helper such as `expect_frame()` only configures mocks;
 the test calls `DMX_WriteFrame()` explicitly. Calls establishing prior state belong
 in Arrange. CMock expectations are configured before Act and verified in Assert;
@@ -109,33 +154,33 @@ hardware coverage.
 
 | Suite | Observable behavior |
 | --- | --- |
-| [Application](test_mqtt2dmx.c) | Channel 16/value 199 command, update-before-confirmation ordering, exact confirmation topic/payload lengths, channel 1/255 and value 0/255 combinations, topic restoration and single incoming release |
+| [Application](unit/app/test_mqtt2dmx.c) | Channel 16/value 199 command, update-before-confirmation ordering, exact confirmation topic/payload lengths, channel 1/255 and value 0/255 combinations, topic restoration and single incoming release |
 | Application | Channel 0/256 and value -1/256 rejection, topic with `/set` but no channel separator; no DMX update or publication |
 | Application | Missing required address, optional client/topic defaults and overrides, initialization order, repeated frames until stop, SIGINT/SIGTERM handler registration and stop intent |
 | Application | Missing/nonterminal/repeated `/set`, empty/textual fields, signed/whitespace/fractional/trailing input, overflow, prefix containing `/set`, leading zeros, confirmation digit lengths |
 | Application | Independent optional overrides, real SIGINT/SIGTERM delivery in isolated children, disconnect on normal signal shutdown |
-| [MQTT](test_mqtt.c) | Explicit-length copying, independent terminated buffers, empty payload, embedded NUL bytes during copying, exactly-once owned-buffer release |
+| [MQTT](unit/adapters/test_mqtt.c) | Explicit-length copying, independent terminated buffers, empty payload, embedded NUL bytes during copying, exactly-once owned-buffer release |
 | MQTT | Client creation/registration, connect options, connect-success subscription at QoS 0, reconnect and resubscribe after loss |
 | MQTT | Explicit nonzero and zero-length topic conventions, release of Paho buffers before main-thread delivery, acknowledgement, unchanged input bytes |
 | MQTT | Publish bytes, length, QoS and retained flag; ownership retained until completion; release on success and asynchronous failure |
 | MQTT | Empty-payload publishing; deferred disconnect-success destruction; create/registration errors and immediate/asynchronous connect, subscribe, send and disconnect failures, including NULL failure responses |
 | MQTT | Failure at each of the three message allocations, partial-message cleanup, receive-buffer cleanup without consumer delivery on allocation failure, message/client cleanup before fatal exits |
-| [DMX](test_dmx.c) | Ordered FTDI setup and exact device/serial parameters, complete zero frame, channel byte offsets and unaffected slots/start code |
+| [DMX](unit/adapters/test_dmx.c) | Ordered FTDI setup and exact device/serial parameters, complete zero frame, channel byte offsets and unaffected slots/start code |
 | DMX | Break on/off and 120/16/12000 microsecond delay sequence, persistent repeated 513-byte frames, value clearing, change-only logging |
 | DMX | Every FTDI initialization step, break-on/off, each delay, short/zero/negative writes: require controlled failure and acquired-resource cleanup, not an assertion abort |
 | DMX | EINTR during each of the break, mark-after-break, and frame delays retries the interrupted delay and completes the frame rather than treating a signal as an I/O failure |
-| [Gateway](test_gateway.c) | Real application/MQTT/DMX modules together: initialization, subscription, Paho delivery, confirmation, frame bytes, ownership, disconnect and destruction |
+| [Gateway](integration/test_gateway.c) | Real application/MQTT/DMX modules together: initialization, subscription, Paho delivery, confirmation, frame bytes, ownership, disconnect and destruction |
 | Gateway | Explicit/zero topic lengths, boundaries and invalid commands, binary payload rejection, failure at each of the six incoming/confirmation allocations and cleanup across modules |
-| [Harness](test_harness.c) | Child assertion isolation, exit-time verification, allocation injection at each position, detection of missing frees before exit |
-| [Commands](test_command.c) | Immutable explicit byte spans, typed channel/value, unchanged output on errors, exact parent-topic length, canonical formatting for all 256 byte values |
-| [Lights](test_lights.c) | All 512 slots, protected start code, invalid slots leave state unchanged, independent stable snapshots |
-| [Shutdown](test_shutdown.c) | Fake monotonic time, delayed completion, exact deadline, failures during drain/destruction, both adapters closed |
-| [Concurrency](test_mqtt_concurrency.c) | Two producer threads and a polling owner, exactly-once delivery, per-producer ordering, 16-message budget, arrivals during stop, synchronous send completion |
+| [Harness](harness/test_harness.c) | Child assertion isolation, exit-time verification, allocation injection at each position, detection of missing frees before exit |
+| [Commands](unit/protocol/test_command.c) | Immutable explicit byte spans, typed channel/value, unchanged output on errors, exact parent-topic length, canonical formatting for all 256 byte values |
+| [Lights](unit/lighting/test_lights.c) | All 512 slots, protected start code, invalid slots leave state unchanged, independent stable snapshots |
+| [Shutdown](unit/app/test_shutdown.c) | Fake monotonic time, delayed completion, exact deadline, failures during drain/destruction, both adapters closed |
+| [Concurrency](integration/test_mqtt_concurrency.c) | Two producer threads and a polling owner, exactly-once delivery, per-producer ordering, 16-message budget, arrivals during stop, synchronous send completion |
 
 ## Isolation and test seams
 
 - Unit executables link the module under test and, where needed, the real shared
-  [application cleanup helper](../src/shutdown.c). Application tests mock the
+  [application cleanup helper](../src/app/shutdown.c). Application tests mock the
   project MQTT/DMX/light-state/shutdown interfaces; wrapper tests execute real wrapper logic and mock
   only Paho or FTDI. The gateway suite links application, commands, lights, both
   adapters, and cleanup; it mocks only Paho, FTDI, delays, and monotonic time.
@@ -169,7 +214,7 @@ hardware coverage.
   dispositions are reset/restored between cases. Stop requests are tested both directly and by
   raising real process signals; crash-prone cases run in isolated children.
 - The [test compiler wrapper](compile.rb), selected in [project.yml](../project.yml),
-  adds `-Dmain=mqtt2dmx_main` only when compiling `src/mqtt2dmx.c`. Ceedling's regular
+  adds `-Dmain=mqtt2dmx_main` only when compiling `src/app/mqtt2dmx.c`. Ceedling's regular
   flags apply to entire test executables, so setting this flag there would also
   rename Unity's entry point. The wrapper leaves the runner's `main` unchanged.
   Production sources need no test-only conditional directives; production builds

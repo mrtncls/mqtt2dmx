@@ -14,14 +14,14 @@
 
 :paths:
   :test:
-    - +:tests/**
-    - -:tests/support
-    - -:tests/fakes
+    - tests/unit/**
+    - tests/integration/**
+    - tests/harness/**
   :source:
-    - src
+    - src/**
     - tests/fakes
   :include:
-    - src
+    - src/**
     - tests/fakes
     - /opt/paho/src
     - /usr/include/libftdi1
@@ -45,6 +45,10 @@
       - -Wl,--wrap=malloc
       - -Wl,--wrap=free
       - -Wl,--wrap=exit
+
+:libraries:
+  :test:
+    - jansson
 
 :unity:
   :use_param_tests: true

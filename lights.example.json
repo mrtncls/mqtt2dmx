@@ -1,0 +1,19 @@
+{
+  "gateway_id": "gateway-1",
+  "name": "MQTT2DMX Gateway",
+  "prefix": "dmx",
+  "discovery": true,
+  "discovery_prefix": "homeassistant",
+  "birth_topic": "homeassistant/status",
+  "lights": [
+    {
+      "id": "zithoek-wandlampen",
+      "name": "Zithoek wandlampen",
+      "channel": 10,
+      "minimum": 66,
+      "transition": 0.5,
+      "curve": "smoothstep"
+    }
+  ],
+  "removals": []
+}

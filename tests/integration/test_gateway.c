@@ -16,6 +16,11 @@ TEST_SOURCE_FILE("dmx.c")
 TEST_SOURCE_FILE("shutdown.c")
 TEST_SOURCE_FILE("command.c")
 TEST_SOURCE_FILE("lights.c")
+TEST_SOURCE_FILE("ha.c")
+TEST_SOURCE_FILE("ha_protocol.c")
+TEST_SOURCE_FILE("config.c")
+TEST_SOURCE_FILE("json_contract.c")
+TEST_SOURCE_FILE("transition.c")
 
 static MQTTAsync client;
 static struct ftdi_context *ftdi;
