@@ -565,6 +565,37 @@ timing/visual thresholds, then run the restart/migration/scene checklist above.
 Implementation does not add RGB, groups, gateway scenes, sequences, gamma,
 dithering, channels 256-512, live reload or unrelated dependency upgrades.
 
+## Transition overwrite verification (2026-10-31)
+
+Follow-up scope: verify that a new transition replaces an active longer one,
+adding a red regression only if the behavior is missing. Production code already
+retargets at application time; no behavior change or red failure was needed.
+
+Added two integration cases in `tests/integration/test_home_gateway.c`, covering
+linear and smoothstep curves through the real MQTT queue, decoder, application,
+and transition engine with mocked Paho, clock, and DMX. Acceptance: replace a
+10-second ON fade after 2.5 seconds with a 1-second OFF fade, preserve the current
+output at replacement, follow the new midpoint and deadline, and remain OFF at
+and after the original deadline. Both cases passed against unchanged production
+code. README wording now explicitly describes replacement rather than queuing.
+
+Verification:
+
+- `docker build --target test -t mqtt2dmx-test:local .`: succeeded using cached
+  test environment layers; this command alone did not execute tests.
+- `docker run --rm --network none mqtt2dmx-test:local test:transition`:
+  freshly executed 19 tests, all passing.
+- `docker run --rm --network none -v "$PWD:/workspace" mqtt2dmx-test:local test:home_gateway`:
+  freshly executed 12 tests, all passing, including both new cases.
+- `docker build -t mqtt2dmx:local .`: freshly executed all 317 tests, all passing,
+  none ignored; production image succeeded with unchanged native build/runtime
+  layers cached.
+
+No broker or hardware execution was performed. No software blocker remains for
+transition replacement; any observed deployment failure needs a concrete command
+sequence and deployed image identification before a failing regression can be
+claimed.
+
 ## References
 
 - [Home Assistant MQTT JSON lights](https://www.home-assistant.io/integrations/light.mqtt/#json-schema)

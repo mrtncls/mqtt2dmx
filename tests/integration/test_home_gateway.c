@@ -156,6 +156,52 @@ void test_given_queued_json_when_owner_polls_then_starts_at_application_time_and
     TEST_ASSERT_EQUAL_UINT(3, subscriptions);
 }
 
+TEST_CASE(0, 113, 89)
+TEST_CASE(1, 95, 80)
+void test_given_long_active_fade_when_shorter_fade_received_then_replaces_old_transition(
+    int curve, int expected_start, int expected_midpoint)
+{
+    // Given (Arrange)
+    config.lights[0].curve = curve;
+    queue("house/lights/lamp/set", "{\"state\":\"ON\",\"transition\":10}");
+    now = 100;
+    Application_Poll();
+    Application_WriteFrame();
+    now = 2600;
+    Application_Poll();
+    Application_WriteFrame();
+    DMXValue before = frame[10];
+    queue("house/lights/lamp/set", "{\"state\":\"OFF\",\"transition\":1}");
+    // When (Act)
+    int status = Application_Poll();
+    status |= Application_WriteFrame();
+    DMXValue start = frame[10];
+    now = 3100;
+    status |= Application_Poll();
+    status |= Application_WriteFrame();
+    DMXValue midpoint = frame[10];
+    now = 3600;
+    status |= Application_Poll();
+    status |= Application_WriteFrame();
+    DMXValue endpoint = frame[10];
+    now = 10100;
+    status |= Application_Poll();
+    status |= Application_WriteFrame();
+    DMXValue old_deadline = frame[10];
+    now = 11100;
+    status |= Application_Poll();
+    status |= Application_WriteFrame();
+    // Then (Assert)
+    TEST_ASSERT_EQUAL_INT(EXIT_SUCCESS, status);
+    TEST_ASSERT_EQUAL_UINT8(expected_start, before);
+    TEST_ASSERT_EQUAL_UINT8(before, start);
+    TEST_ASSERT_EQUAL_UINT8(expected_midpoint, midpoint);
+    TEST_ASSERT_EQUAL_UINT8(0, endpoint);
+    TEST_ASSERT_EQUAL_UINT8(0, old_deadline);
+    TEST_ASSERT_EQUAL_UINT8(0, frame[10]);
+    TEST_ASSERT_EQUAL_UINT(7, frames);
+}
+
 void test_given_active_fade_when_raw_override_received_then_confirms_exact_byte_and_reconciles_json(void)
 {
     // Given (Arrange)

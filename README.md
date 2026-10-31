@@ -108,8 +108,10 @@ State snapshots look like `{"state":"ON","brightness":128}`. They describe the
 Snapshots are retained and coalesced; no MQTT message is sent for each fade frame.
 
 Transitions interpolate unrounded logical brightness using elapsed monotonic time.
-Linear uses `t`; smoothstep uses `3*t*t - 2*t*t*t`. Retargeting starts from the current
-unrounded value at command application time. Late frames jump ahead; the first
+Linear uses `t`; smoothstep uses `3*t*t - 2*t*t*t`. A new command for the same light
+replaces any active transition immediately when applied, using the new command's
+duration (or the configured default). It starts from the current unrounded value;
+the old transition does not resume. Late frames jump ahead; the first
 frame at/after the deadline contains the exact endpoint. Internal completion is
 recorded only after a successful frame submission. All lights in one frame share
 one timestamp. Separate scene commands are not an atomic/synchronized batch.
