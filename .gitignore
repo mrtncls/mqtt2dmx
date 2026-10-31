@@ -2,3 +2,4 @@
 mqtt2dmx
 paho.mqtt.c
 .vscode
+/build/

@@ -1,0 +1,69 @@
+:project:
+  :which_ceedling: gem
+  :ceedling_version: 1.0.1
+  :use_mocks: true
+  :use_backtrace: :none
+  :use_test_preprocessor: :none
+  :use_deep_preprocessor: :none
+  :build_root: build
+  :test_file_prefix: test_
+  :default_tasks:
+    - test:all
+  :test_threads: 1
+  :compile_threads: 1
+
+:paths:
+  :test:
+    - +:tests/**
+    - -:tests/support
+    - -:tests/fakes
+  :source:
+    - src
+    - tests/fakes
+  :include:
+    - src
+    - tests/fakes
+    - /opt/paho/src
+    - /usr/include/libftdi1
+  :support:
+    - tests/support
+
+:tools:
+  :test_compiler:
+    :executable: tests/compile.rb
+
+:flags:
+  :test:
+    :compile:
+      - -fno-common
+      - -pthread
+      - -Wall
+      - -Wextra
+      - -Wno-unused-parameter
+    :link:
+      - -pthread
+      - -Wl,--wrap=malloc
+      - -Wl,--wrap=free
+      - -Wl,--wrap=exit
+
+:unity:
+  :use_param_tests: true
+
+:cmock:
+  :plugins:
+    - :ignore
+    - :callback
+    - :ignore_arg
+    - :return_thru_ptr
+  :mock_prefix: mock_
+  :when_ptr: :compare_ptr
+  :enforce_strict_ordering: true
+
+:plugins:
+  :enabled:
+    - report_tests_pretty_stdout
+    - report_tests_log_factory
+
+:report_tests_log_factory:
+  :reports:
+    - json
