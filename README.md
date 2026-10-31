@@ -3,6 +3,14 @@
 A C gateway with legacy raw-channel commands and an optional Home Assistant MQTT
 JSON light interface, calibrated brightness, local transitions and discovery.
 
+## Releases
+
+Use the [release skill](.github/skills/release/SKILL.md) (`/release`) to build and
+publish to Docker Hub as `mrtncls/mqtt2dmx:YYYY-MM-DD.N`. The date is UTC and the
+number starts at 1 each day, incrementing from the highest existing dated tag.
+Every release also updates `mrtncls/mqtt2dmx:latest` to the same image and verifies
+both remote tags. The production build includes the required test gate.
+
 ## Environment variables
 
 MQTT_ADDRESS: required
