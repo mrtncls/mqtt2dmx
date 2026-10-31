@@ -45,24 +45,53 @@ reload, state restoration from disk, or persistence of remembered brightness.
 The file is strict UTF-8 JSON, at most 128 KiB. Duplicate keys, unknown fields,
 wrong types and invalid settings are rejected, not silently defaulted.
 
-| Field | Meaning / default |
-| --- | --- |
-| `gateway_id` | Required stable identity; never derive it from a channel or changing client ID |
-| `name` | Gateway device display name; defaults to `gateway_id` |
-| `prefix` | Operational topic prefix; default `dmx` |
-| `discovery` | Boolean, default `true`; disable only for manual setup/explicit cleanup |
-| `discovery_prefix` | Default `homeassistant` |
-| `birth_topic` | HA birth topic, default `homeassistant/status`; recognized payload is `online` |
-| `lights` | Required array, 0-255 light definitions |
-| `removals` | Optional persistent removal manifest, 0-64 exact topic pairs; see below |
+#### General fields
 
-Each light requires `id`, `name`, and `channel`. Optional `minimum` defaults to 0,
-`transition` to 0.5 seconds, and `curve` to `smoothstep` (`linear` is also supported).
-`channel` is an integer 1-255 and `minimum` an integer 0-255. IDs and channel
-assignments must be unique. IDs/gateway IDs are 1-48 lowercase ASCII letters,
+| Field | Meaning | Mandatory | Default value |
+| --- | --- | --- | --- |
+| `gateway_id` | Stable gateway identity; never derive it from a channel or changing client ID | Yes | None |
+| `name` | Gateway device display name | No | Value of `gateway_id` |
+| `prefix` | Operational MQTT topic prefix | No | `dmx` |
+| `discovery` | Boolean enabling Home Assistant discovery; disable only for manual setup/explicit cleanup | No | `true` |
+| `discovery_prefix` | MQTT topic prefix for Home Assistant discovery | No | `homeassistant` |
+| `birth_topic` | Home Assistant birth topic; recognized payload is `online` | No | `homeassistant/status` |
+| `lights` | Array of 0-255 light definitions; see the light fields below | Yes | None |
+| `removals` | Persistent removal manifest containing 0-64 exact topic pairs; see the removal fields below | No | `[]` (no removals) |
+
+#### Light fields
+
+Each object in `lights` supports:
+
+| Field | Meaning | Mandatory | Default value |
+| --- | --- | --- | --- |
+| `id` | Stable light identity, unique within this gateway | Yes | None |
+| `name` | Light display name | Yes | None |
+| `channel` | DMX channel, integer 1-255, unique within this gateway | Yes | None |
+| `minimum` | Minimum calibrated DMX output for logical brightness 1, integer 0-255; logical zero always outputs zero | No | `0` |
+| `transition` | Default fade duration in seconds, a finite number from 0 through 3600; `0` disables implicit fading | No | `0.5` seconds |
+| `curve` | Transition interpolation curve: `smoothstep` or `linear` | No | `smoothstep` |
+
+IDs/gateway IDs are 1-48 lowercase ASCII letters,
 digits or hyphens, with no leading/trailing hyphen. Names are 1-96 UTF-8 bytes.
 Prefixes and birth topics are 1-128 ASCII letters/digits, underscores, hyphens
 or `/`, without empty segments or leading/trailing `/`. No MQTT wildcards.
+
+#### Removal fields
+
+Each object in `removals` authorizes empty retained publications to exactly two
+topics. Both fields are mandatory when an entry is present:
+
+| Field | Meaning | Mandatory | Default value |
+| --- | --- | --- | --- |
+| `discovery` | Exact old discovery topic to clear; must contain `/light/` and end in `/config` | Yes | None |
+| `state` | Exact old state topic to clear; must contain `/lights/` and end in `/state` | Yes | None |
+
+Removal topics are 1-255 ASCII letters/digits, underscores, hyphens or `/`, without
+empty segments, leading/trailing `/` or MQTT wildcards. Never list another
+gateway's topics. See [Discovery, availability and removal](#discovery-availability-and-removal)
+for cleanup and migration requirements.
+
+#### Topic subscriptions
 
 `MQTT_TOPIC` remains the independent legacy subscription. Light commands subscribe
 to `<prefix>/lights/+/set`; discovery also subscribes to the HA birth topic. All
