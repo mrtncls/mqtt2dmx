@@ -6,6 +6,7 @@
 TEST_SOURCE_FILE("config.c")
 TEST_SOURCE_FILE("json_contract.c")
 TEST_SOURCE_FILE("transition.c")
+TEST_SOURCE_FILE("ha_topics.c")
 
 void setUp(void) {}
 void tearDown(void) {}

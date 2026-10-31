@@ -38,7 +38,8 @@ docker build --target build -t mqtt2dmx-build:local .
 ```
 
 The Dockerfile invokes `make` inside the image. Do not run `make` on the host.
-Do not recommend `make run`: its prerequisite `build` is not defined.
+`make run` builds and starts the application; it still requires Docker and explicit
+broker/device approval. Use the Docker build commands above for build-only work.
 Both commands consume the `test-results` stage, which runs the full suite via
 `ruby tests/run.rb test:all` and provides a success marker only after the runner
 passes. The runtime image does not include Ruby, Ceedling, mocks, or test reports.

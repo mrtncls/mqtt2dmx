@@ -1,11 +1,13 @@
 #include "unity.h"
 #include "config.h"
+#include "test_helpers.h"
 #include <string.h>
 #include <jansson.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 TEST_SOURCE_FILE("json_contract.c")
+TEST_SOURCE_FILE("ha_topics.c")
 
 static GatewayConfig config;
 void setUp(void) { memset(&config, 0, sizeof(config)); }
@@ -40,11 +42,95 @@ void test_given_invalid_config_when_parsed_then_rejects_without_partial_update(c
 {
     // Given (Arrange)
     config.count = 42;
+    GatewayConfig before = config;
     // When (Act)
     bool valid = Config_Parse(input, strlen(input), &config);
     // Then (Assert)
     TEST_ASSERT_FALSE(valid);
-    TEST_ASSERT_EQUAL_UINT(42, config.count);
+    TEST_ASSERT_EQUAL_MEMORY(&before, &config, sizeof(config));
+}
+
+static const char *diagnostic_input;
+
+static void parse_invalid_config(void)
+{
+    GatewayConfig before = config;
+    bool valid = Config_Parse(diagnostic_input, strlen(diagnostic_input), &config);
+    TEST_ASSERT_FALSE(valid);
+    TEST_ASSERT_EQUAL_MEMORY(&before, &config, sizeof(config));
+}
+
+TEST_CASE("{\"gateway_id\":\"bad/id\",\"lights\":[]}", "gateway_id:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"name\":\"\",\"lights\":[]}", "name:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"prefix\":\"bad/+\",\"lights\":[]}", "prefix:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"discovery_prefix\":\"bad/#\",\"lights\":[]}", "discovery_prefix:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"birth_topic\":\"bad/+\",\"lights\":[]}", "birth_topic:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"discovery\":\"true\",\"lights\":[]}", "discovery:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":{}}", "lights:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[{\"id\":\"bad/id\",\"name\":\"One\",\"channel\":1}]}", "lights[0].id:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[{\"id\":\"one\",\"name\":\"\",\"channel\":1}]}", "lights[0].name:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[{\"id\":\"one\",\"name\":\"One\",\"channel\":0}]}", "lights[0].channel:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[{\"id\":\"one\",\"name\":\"One\",\"channel\":1,\"minimum\":256}]}", "lights[0].minimum:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[{\"id\":\"one\",\"name\":\"One\",\"channel\":1,\"transition\":-1}]}", "lights[0].transition:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[{\"id\":\"one\",\"name\":\"One\",\"channel\":1,\"curve\":\"gamma\"}]}", "lights[0].curve:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[{\"id\":\"one\",\"name\":\"One\",\"channel\":1},{\"id\":\"one\",\"name\":\"Two\",\"channel\":2}]}", "lights[1].id: duplicate")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[{\"id\":\"one\",\"name\":\"One\",\"channel\":1},{\"id\":\"two\",\"name\":\"Two\",\"channel\":1}]}", "lights[1].channel: duplicate")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[],\"removals\":{}}", "removals:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[],\"removals\":[{\"discovery\":\"bad\",\"state\":\"old/lights/one/state\"}]}", "removals[0].discovery:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[],\"removals\":[{\"discovery\":\"old/light/one/config\",\"state\":\"bad\"}]}", "removals[0].state:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[{\"id\":\"one\",\"name\":\"One\",\"channel\":1}],\"removals\":[{\"discovery\":\"homeassistant/light/mqtt2dmx_gateway_one/config\",\"state\":\"old/lights/one/state\"}]}", "removals[0].discovery: overlaps")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[],\"birth_topic\":\"dmx/availability\"}", "birth_topic: overlaps")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[],\"birth_topic\":\"dmx/lights/one/set\"}", "birth_topic: overlaps")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[{\"id\":\"one\",\"name\":\"One\",\"channel\":1,\"extra\":true}]}", "lights[0]:")
+TEST_CASE("{\"gateway_id\":\"gateway\",\"lights\":[],\"removals\":[{}]}", "removals[0].discovery:")
+void test_given_invalid_field_when_parsed_then_reports_its_path_without_changing_configuration(
+    const char *input, const char *diagnostic)
+{
+    // Given (Arrange)
+    diagnostic_input = input;
+    memset(&config, 0x5a, sizeof(config));
+    // When (Act)
+    struct child_result result = run_child(parse_invalid_config);
+    // Then (Assert)
+    assert_child_success(&result);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(result.output, diagnostic), result.output);
+}
+
+TEST_CASE("house/dmx/availability")
+TEST_CASE("house/dmx/lights/kitchen/state")
+TEST_CASE("custom/ha/light/mqtt2dmx_gateway_kitchen/config")
+TEST_CASE("old/ha/light/mqtt2dmx_old_kitchen/config")
+TEST_CASE("old/dmx/lights/kitchen/state")
+TEST_CASE("custom/ha/status")
+void test_given_custom_topics_when_legacy_filter_matches_then_rejects_subscription(const char *filter)
+{
+    // Given (Arrange)
+    const char *input = "{\"gateway_id\":\"gateway\",\"prefix\":\"house/dmx\","
+        "\"discovery_prefix\":\"custom/ha\",\"birth_topic\":\"custom/ha/status\","
+        "\"lights\":[{\"id\":\"kitchen\",\"name\":\"Kitchen\",\"channel\":10}],"
+        "\"removals\":[{\"discovery\":\"old/ha/light/mqtt2dmx_old_kitchen/config\","
+        "\"state\":\"old/dmx/lights/kitchen/state\"}]}";
+    TEST_ASSERT_TRUE(Config_Parse(input, strlen(input), &config));
+    // When (Act)
+    bool valid = Config_ValidateSubscriptions(&config, filter);
+    // Then (Assert)
+    TEST_ASSERT_FALSE(valid);
+}
+
+void test_given_discovery_disabled_when_topics_overlap_unused_discovery_then_preserves_acceptance(void)
+{
+    // Given (Arrange)
+    const char *input = "{\"gateway_id\":\"gateway\",\"discovery\":false,"
+        "\"birth_topic\":\"dmx/availability\","
+        "\"lights\":[{\"id\":\"one\",\"name\":\"One\",\"channel\":1}],"
+        "\"removals\":[{\"discovery\":\"homeassistant/light/mqtt2dmx_gateway_one/config\","
+        "\"state\":\"dmx/lights/one/state\"}]}";
+    // When (Act)
+    bool valid = Config_Parse(input, strlen(input), &config);
+    // Then (Assert)
+    TEST_ASSERT_TRUE(valid);
+    TEST_ASSERT_EQUAL_UINT(1, config.removal_count);
+    TEST_ASSERT_FALSE(config.discovery);
 }
 
 void test_given_light_definition_when_parsed_then_maps_stable_id_and_defaults(void)

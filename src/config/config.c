@@ -1,5 +1,6 @@
 #include "config.h"
 #include "json_contract.h"
+#include "ha_topics.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,16 +26,15 @@ static bool matches(const char *filter, const char *topic)
 static bool matches_output(const GatewayConfig *config, const char *filter)
 {
     char output[HA_TOPIC_LIMIT];
-    snprintf(output, sizeof(output), "%s/availability", config->prefix);
+    HA_AvailabilityTopic(config, output);
     if (matches(filter, output))
         return true;
     for (size_t i = 0; i < config->count; i++)
     {
-        snprintf(output, sizeof(output), "%s/lights/%s/state", config->prefix, config->lights[i].id);
+        HA_Topic(config, i, HA_STATE_TOPIC, output);
         if (matches(filter, output))
             return true;
-        snprintf(output, sizeof(output), "%s/light/mqtt2dmx_%s_%s/config",
-            config->discovery_prefix, config->gateway_id, config->lights[i].id);
+        HA_Topic(config, i, HA_DISCOVERY_TOPIC, output);
         if (config->discovery && matches(filter, output))
             return true;
     }
@@ -106,29 +106,40 @@ int Config_Find(const GatewayConfig *config, const char *id, size_t length)
     return -1;
 }
 
-static bool parse_light(json_t *object, LightConfig *light)
+static bool invalid(const char *scope, const char *field, const char *reason)
+{
+    fprintf(stderr, "Invalid light configuration: %s%s%s: %s\n",
+        scope, *scope && *field ? "." : "", field, reason);
+    return false;
+}
+
+static bool parse_light(json_t *object, LightConfig *light, const char *scope)
 {
     const char *const keys[] = {"id", "name", "channel", "minimum", "transition", "curve", NULL};
     int channel, minimum = 0;
     *light = (LightConfig){.duration_ms = 500, .curve = CURVE_SMOOTHSTEP};
-    if (!Json_Keys(object, keys) ||
-        !Json_String(json_object_get(object, "id"), light->id, sizeof(light->id)) ||
-        !slug(light->id) ||
-        !Json_String(json_object_get(object, "name"), light->name, sizeof(light->name)) ||
-        !integer(object, "channel", 1, 255, &channel) ||
-        (json_object_get(object, "minimum") && !integer(object, "minimum", 0, 255, &minimum)))
-        return false;
+    if (!Json_Keys(object, keys))
+        return invalid(scope, "", "expected an object with supported fields");
+    if (!Json_String(json_object_get(object, "id"), light->id, sizeof(light->id)) ||
+        !slug(light->id))
+        return invalid(scope, "id", "expected a valid light ID");
+    if (!Json_String(json_object_get(object, "name"), light->name, sizeof(light->name)))
+        return invalid(scope, "name", "expected a nonempty name within the length limit");
+    if (!integer(object, "channel", 1, 255, &channel))
+        return invalid(scope, "channel", "expected an integer from 1 through 255");
+    if (json_object_get(object, "minimum") && !integer(object, "minimum", 0, 255, &minimum))
+        return invalid(scope, "minimum", "expected an integer from 0 through 255");
     light->channel = (DMXChannel)channel;
     light->minimum = (DMXValue)minimum;
     json_t *duration = json_object_get(object, "transition");
     if (duration && !Json_Duration(duration, &light->duration_ms))
-        return false;
+        return invalid(scope, "transition", "expected a finite duration from 0 through 3600 seconds");
     json_t *curve = json_object_get(object, "curve");
     if (curve)
     {
         const char *name = json_string_value(curve);
         if (!name || (strcmp(name, "linear") && strcmp(name, "smoothstep")))
-            return false;
+            return invalid(scope, "curve", "expected linear or smoothstep");
         light->curve = !strcmp(name, "linear") ? CURVE_LINEAR : CURVE_SMOOTHSTEP;
     }
     return true;
@@ -140,72 +151,108 @@ static bool suffix(const char *text, const char *ending)
     return n > m && !strcmp(text + n - m, ending);
 }
 
-static bool parse_config(json_t *root, GatewayConfig *parsed)
+static bool parse_general(json_t *root, GatewayConfig *parsed)
 {
     const char *const keys[] = {"gateway_id", "name", "prefix", "discovery_prefix",
         "birth_topic", "discovery", "lights", "removals", NULL};
-    if (!Json_Keys(root, keys) ||
-        !Json_String(json_object_get(root, "gateway_id"), parsed->gateway_id, sizeof(parsed->gateway_id)) ||
+    if (!Json_Keys(root, keys))
+        return invalid("", "document", "expected an object with supported fields");
+    if (!Json_String(json_object_get(root, "gateway_id"), parsed->gateway_id, sizeof(parsed->gateway_id)) ||
         !slug(parsed->gateway_id))
-        return false;
+        return invalid("", "gateway_id", "expected a valid gateway ID");
     strcpy(parsed->name, parsed->gateway_id);
     strcpy(parsed->prefix, "dmx");
     strcpy(parsed->discovery_prefix, "homeassistant");
     strcpy(parsed->birth_topic, "homeassistant/status");
     parsed->discovery = true;
-    if (!optional_string(root, "name", parsed->name, sizeof(parsed->name)) ||
-        !optional_string(root, "prefix", parsed->prefix, sizeof(parsed->prefix)) ||
-        !optional_string(root, "discovery_prefix", parsed->discovery_prefix, sizeof(parsed->discovery_prefix)) ||
-        !optional_string(root, "birth_topic", parsed->birth_topic, sizeof(parsed->birth_topic)) ||
-        !topic(parsed->prefix) || !topic(parsed->discovery_prefix) || !topic(parsed->birth_topic))
-        return false;
+    if (!optional_string(root, "name", parsed->name, sizeof(parsed->name)))
+        return invalid("", "name", "expected a nonempty name within the length limit");
+    if (!optional_string(root, "prefix", parsed->prefix, sizeof(parsed->prefix)) || !topic(parsed->prefix))
+        return invalid("", "prefix", "expected a valid topic prefix within the length limit");
+    if (!optional_string(root, "discovery_prefix", parsed->discovery_prefix, sizeof(parsed->discovery_prefix)) ||
+        !topic(parsed->discovery_prefix))
+        return invalid("", "discovery_prefix", "expected a valid topic prefix within the length limit");
+    if (!optional_string(root, "birth_topic", parsed->birth_topic, sizeof(parsed->birth_topic)) ||
+        !topic(parsed->birth_topic))
+        return invalid("", "birth_topic", "expected a valid topic within the length limit");
     json_t *discovery = json_object_get(root, "discovery");
     if (discovery && !json_is_boolean(discovery))
-        return false;
+        return invalid("", "discovery", "expected a boolean");
     if (discovery)
         parsed->discovery = json_is_true(discovery);
-    json_t *lights = json_object_get(root, "lights");
+    return true;
+}
+
+static bool parse_lights(json_t *lights, GatewayConfig *parsed)
+{
     if (!json_is_array(lights) || json_array_size(lights) > LIGHT_LIMIT)
-        return false;
+        return invalid("", "lights", "expected an array of at most 255 lights");
     parsed->count = json_array_size(lights);
     for (size_t i = 0; i < parsed->count; i++)
     {
-        if (!parse_light(json_array_get(lights, i), &parsed->lights[i]))
+        char scope[32];
+        snprintf(scope, sizeof(scope), "lights[%zu]", i);
+        if (!parse_light(json_array_get(lights, i), &parsed->lights[i], scope))
             return false;
         for (size_t j = 0; j < i; j++)
-            if (!strcmp(parsed->lights[i].id, parsed->lights[j].id) ||
-                parsed->lights[i].channel == parsed->lights[j].channel)
-                return false;
+        {
+            if (!strcmp(parsed->lights[i].id, parsed->lights[j].id))
+                return invalid(scope, "id", "duplicate light ID");
+            if (parsed->lights[i].channel == parsed->lights[j].channel)
+                return invalid(scope, "channel", "duplicate DMX channel");
+        }
     }
-    json_t *removals = json_object_get(root, "removals");
+    return true;
+}
+
+static bool parse_removals(json_t *removals, GatewayConfig *parsed)
+{
     if (removals && (!json_is_array(removals) || json_array_size(removals) > REMOVAL_LIMIT))
-        return false;
+        return invalid("", "removals", "expected an array of at most 64 removals");
     parsed->removal_count = removals ? json_array_size(removals) : 0;
     const char *const removal_keys[] = {"discovery", "state", NULL};
     for (size_t i = 0; i < parsed->removal_count; i++)
     {
         json_t *entry = json_array_get(removals, i);
         Removal *r = &parsed->removals[i];
-        if (!Json_Keys(entry, removal_keys) ||
-            !Json_String(json_object_get(entry, "discovery"), r->discovery, sizeof(r->discovery)) ||
-            !Json_String(json_object_get(entry, "state"), r->state, sizeof(r->state)) ||
-            !topic(r->discovery) || !topic(r->state) ||
-            !strstr(r->discovery, "/light/") || !suffix(r->discovery, "/config") ||
+        char scope[32];
+        snprintf(scope, sizeof(scope), "removals[%zu]", i);
+        if (!Json_Keys(entry, removal_keys))
+            return invalid(scope, "", "expected an object with discovery and state fields");
+        if (!Json_String(json_object_get(entry, "discovery"), r->discovery, sizeof(r->discovery)) ||
+            !topic(r->discovery) || !strstr(r->discovery, "/light/") || !suffix(r->discovery, "/config"))
+            return invalid(scope, "discovery", "expected an exact discovery topic ending in /config");
+        if (!Json_String(json_object_get(entry, "state"), r->state, sizeof(r->state)) || !topic(r->state) ||
             !strstr(r->state, "/lights/") || !suffix(r->state, "/state"))
-            return false;
+            return invalid(scope, "state", "expected an exact light topic ending in /state");
         for (size_t j = 0; j < parsed->count; j++)
         {
             char current[HA_TOPIC_LIMIT];
-            snprintf(current, sizeof(current), "%s/light/mqtt2dmx_%s_%s/config",
-                parsed->discovery_prefix, parsed->gateway_id, parsed->lights[j].id);
+            HA_Topic(parsed, j, HA_DISCOVERY_TOPIC, current);
             if (parsed->discovery && !strcmp(current, r->discovery))
-                return false;
+                return invalid(scope, "discovery", "overlaps an active discovery topic");
         }
     }
+    return true;
+}
+
+static bool validate_birth_topic(const GatewayConfig *config)
+{
+    if (!config->discovery)
+        return true;
     char commands[HA_TOPIC_LIMIT];
-    snprintf(commands, sizeof(commands), "%s/lights/+/set", parsed->prefix);
-    return !parsed->discovery || (!matches_output(parsed, parsed->birth_topic) &&
-        !matches(commands, parsed->birth_topic));
+    HA_CommandFilter(config, commands);
+    if (matches_output(config, config->birth_topic) || matches(commands, config->birth_topic))
+        return invalid("", "birth_topic", "overlaps light commands or publications");
+    return true;
+}
+
+static bool parse_config(json_t *root, GatewayConfig *parsed)
+{
+    return parse_general(root, parsed) &&
+        parse_lights(json_object_get(root, "lights"), parsed) &&
+        parse_removals(json_object_get(root, "removals"), parsed) &&
+        validate_birth_topic(parsed);
 }
 
 bool Config_Parse(const char *data, size_t length, GatewayConfig *config)
@@ -218,8 +265,6 @@ bool Config_Parse(const char *data, size_t length, GatewayConfig *config)
     json_decref(root);
     if (valid)
         *config = parsed;
-    else
-        fprintf(stderr, "Invalid light configuration: check fields, bounds and unique IDs/channels\n");
     return valid;
 }
 

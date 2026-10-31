@@ -45,35 +45,13 @@ bool HA_Decode(const char *payload, size_t length, LightCommand *command)
     return valid;
 }
 
-int HA_Route(const GatewayConfig *config, const char *topic, size_t length)
-{
-    char prefix[HA_TOPIC_LIMIT];
-    int prefix_length = snprintf(prefix, sizeof(prefix), "%s/lights/", config->prefix);
-    if (length < (size_t)prefix_length || memcmp(prefix, topic, (size_t)prefix_length))
-        return -2;
-    if (memchr(topic, 0, length) || length <= (size_t)prefix_length + 4 ||
-        memcmp(topic + length - 4, "/set", 4))
-        return -1;
-    return Config_Find(config, topic + prefix_length, length - prefix_length - 4);
-}
-
-void HA_Topic(const GatewayConfig *config, size_t light, HATopic type, char out[HA_TOPIC_LIMIT])
-{
-    if (type == HA_DISCOVERY_TOPIC)
-        snprintf(out, HA_TOPIC_LIMIT, "%s/light/mqtt2dmx_%s_%s/config",
-            config->discovery_prefix, config->gateway_id, config->lights[light].id);
-    else
-        snprintf(out, HA_TOPIC_LIMIT, "%s/lights/%s/%s", config->prefix,
-            config->lights[light].id, type == HA_COMMAND_TOPIC ? "set" : "state");
-}
-
 bool HA_Discovery(const GatewayConfig *config, size_t light, char *out, size_t size)
 {
     char command[HA_TOPIC_LIMIT], state[HA_TOPIC_LIMIT], availability[HA_TOPIC_LIMIT];
     char unique[2 * ID_LIMIT + 11], device[ID_LIMIT + 10];
     HA_Topic(config, light, HA_COMMAND_TOPIC, command);
     HA_Topic(config, light, HA_STATE_TOPIC, state);
-    snprintf(availability, sizeof(availability), "%s/availability", config->prefix);
+    HA_AvailabilityTopic(config, availability);
     snprintf(unique, sizeof(unique), "mqtt2dmx_%s_%s", config->gateway_id, config->lights[light].id);
     snprintf(device, sizeof(device), "mqtt2dmx_%s", config->gateway_id);
     json_t *root = json_pack("{s:s,s:s,s:s,s:s,s:s,s:s,s:s,s:s,s:b,s:[s],s:b,s:i,s:b,s:{s:[s],s:s},s:{s:s,s:s}}",

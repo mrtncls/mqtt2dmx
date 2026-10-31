@@ -111,7 +111,7 @@ int HA_Service(HomeAssistant *ha)
     if (ha->phase == HA_OFFLINE)
     {
         ha->phase = HA_REMOVALS;
-        snprintf(topic, sizeof(topic), "%s/availability", config->prefix);
+        HA_AvailabilityTopic(config, topic);
         return publish(topic, "offline");
     }
     if (ha->phase == HA_REMOVALS)
@@ -154,7 +154,7 @@ int HA_Service(HomeAssistant *ha)
     if (ha->phase == HA_SNAPSHOTS)
     {
         ha->phase = HA_READY;
-        snprintf(topic, sizeof(topic), "%s/availability", config->prefix);
+        HA_AvailabilityTopic(config, topic);
         return publish(topic, "online");
     }
     return EXIT_SUCCESS;

@@ -44,6 +44,9 @@ reload, state restoration from disk, or persistence of remembered brightness.
 
 The file is strict UTF-8 JSON, at most 128 KiB. Duplicate keys, unknown fields,
 wrong types and invalid settings are rejected, not silently defaulted.
+Semantic errors identify the affected field or zero-based array entry, such as
+`lights[0].channel` or `removals[1].discovery`. Rejected input never partially
+replaces the configuration.
 
 #### General fields
 
@@ -330,7 +333,7 @@ tests/           Unity/CMock suites, runner, and compiler wrapper
   harness/       Tests of the test infrastructure itself
   support/       Test helpers and external-library mock declarations
   fakes/         Thread-safe Paho test double for concurrent handoff tests
-build/           Ignored generated test output
+build/           Ignored generated test output and native objects/dependencies
 .agent-memory/   Architecture/refactor plans and handoff context
 .github/         Contributor instructions and development skills
 Dockerfile       Docker test, build, and runtime stages
@@ -341,8 +344,11 @@ Gemfile*         Pinned test-tool dependencies
 
 [Application code](src/app/mqtt2dmx.c) owns configuration, light state, confirmations,
 and the main loop. [Configuration](src/config/config.c), [strict JSON helpers](src/config/json_contract.c),
-[HA protocol](src/protocol/ha_protocol.c), [transitions/calibration](src/lighting/transition.c) and
+[HA JSON protocol](src/protocol/ha_protocol.c), [shared HA topics](src/protocol/ha_topics.c),
+[transitions/calibration](src/lighting/transition.c) and
 [HA owner/scheduler](src/app/ha.c) implement the optional interface.
+Topic builders are shared by subscription/collision validation, discovery and
+publication so those contracts cannot drift independently.
 [Command decoding/formatting](src/protocol/command.c) and
 [light-state operations](src/lighting/lights.c) are pure contracts. [MQTT](src/adapters/mqtt.c)
 owns the synchronized incoming queue, Paho client, and in-flight publication
@@ -356,8 +362,14 @@ generated mocks remain in `build/`, never in production source directories.
 Build configuration adds each source group to the header search path, so includes
 and Ceedling `TEST_SOURCE_FILE` declarations use unique basenames. Keep source,
 header, and test basenames unique across groups; focused test selectors are unchanged.
-Production objects and the executable are generated in the Docker build working
-directory, with only the executable and runtime libraries copied to the final image.
+Production objects and compiler-generated header dependencies live under
+`build/native/`; the executable remains at the build working directory root.
+The Makefile supports incremental and parallel compilation, tracks transitive
+headers with `-MMD -MP`, and applies `-Wall` during compilation. Its default,
+`make`, and `build` targets build the same executable without an implicit clean.
+Only the executable and runtime libraries are copied to the final image.
+All compilation and execution must still happen inside Docker; `make run` starts
+the application and requires explicit broker/device approval.
 
 ### Production image
 
@@ -411,7 +423,7 @@ The `test` target only prepares the environment; unlike `test-results`, it does
 not execute tests during the build. Focused selectors are `test:mqtt2dmx`,
 `test:mqtt`, `test:dmx`, `test:gateway`, `test:harness`, `test:command`,
 `test:lights`, `test:shutdown`, `test:mqtt_concurrency`, `test:config`,
-`test:transition`, `test:ha_protocol`, `test:ha`, and `test:home_gateway`.
+`test:transition`, `test:ha_protocol`, `test:ha_topics`, `test:ha`, and `test:home_gateway`.
 
 Rebuild the standalone image after editing tests or sources. Alternatively, mount
 the checkout to test current files and retain generated reports in `build/`:

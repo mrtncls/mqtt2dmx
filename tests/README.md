@@ -61,7 +61,7 @@ For focused suites or mounted-checkout testing, use the standalone `test` image
 and `docker run` commands in the [project README](../README.md). Focused selectors
 are `test:mqtt2dmx`, `test:mqtt`, `test:dmx`, `test:gateway`, `test:harness`,
 `test:command`, `test:lights`, `test:shutdown`, `test:mqtt_concurrency`,
-`test:config`, `test:transition`, `test:ha_protocol`, `test:ha`, and `test:home_gateway`.
+`test:config`, `test:transition`, `test:ha_protocol`, `test:ha_topics`, `test:ha`, and `test:home_gateway`.
 Pass one selector per container invocation; use `test:all` for the complete suite.
 
 The [runner](run.rb) cleans generated output, propagates Ceedling failures, and
@@ -91,9 +91,10 @@ No Ruby tooling or test artifacts are copied into the runtime image.
 
 | Suite | Contracts |
 | --- | --- |
-| [Configuration](unit/config/test_config.c) | Stable IDs, names, exact channel mapping, duplicate IDs/channels/keys, unsupported fields, type/range/bound checks, 255-light limit, file loading, custom prefixes, self-subscription rejection, explicit migration manifests |
+| [Configuration](unit/config/test_config.c) | Stable IDs, names, exact channel mapping, duplicate IDs/channels/keys, unsupported fields, type/range/bound checks, 255-light limit, file loading, custom prefixes, self-subscription rejection, explicit migration manifests, field/index diagnostics and byte-for-byte preservation of rejected destination configurations |
 | [Transitions](unit/lighting/test_transition.c) | All 256 template brightness values, fractional off threshold, inverse calibration, both curves, ascending/descending, default versus explicit zero, elapsed time/late endpoints, retarget precision, maximum duration, equal targets, remembered brightness, raw overrides, submission-gated completion |
 | [HA protocol](unit/protocol/test_ha_protocol.c) | Actual HA JSON examples, optional-field rules, reordering/whitespace, invalid types/values, malformed/duplicate/NUL JSON, 512-byte input boundary, duration rounding, exact ID lookup, custom topics, escaped discovery names, full-length identity and worst-case 4096-byte output bounds |
+| [HA topics](unit/protocol/test_ha_topics.c) | Exact command/state/discovery topics, command filter and availability, custom prefixes and maximum-length gateway topics; shared by validation and publication |
 | [HA owner/scheduler](unit/app/test_ha.c) | Independent fades, calibrated frames, protected start code, raw/state reconciliation, startup ordering, single in-flight publication, coalescing, offline continuation, reconnect/birth refresh without restarting fades, explicit exact-topic cleanup with discovery disabled, offline removal retry, retained command rejection, fatal send status |
 | [Home gateway](integration/test_home_gateway.c) | Real application/MQTT/decoder/engine/scheduler with mocked Paho/DMX/clock: application timestamps, calibrated endpoints, shorter transitions replacing active fades for both curves without resuming the old fade, legacy confirmation bytes and retention, logical reconciliation, queue drain budget between frames, offline fading, retained replay rejection, send/clock/frame failures and stop intent |
 | [MQTT](unit/adapters/test_mqtt.c) | Opt-in three-filter reconnect, retained offline will, retention flag forwarding, completion accounting, graceful offline draining, connection-loss-before-subscribe and disconnected shutdown |
@@ -105,6 +106,13 @@ passed their focused Docker suites. The saved
 red/green and final production-build evidence. Logging tests use constant-memory
 mock callbacks for the long run; other transport tests retain strict ordered
 expectations. No sleeps, real broker, USB device or privileged container is used.
+
+The [targeted refactor plan](../.agent-memory/targeted-refactors-plan.md) records
+the later 317-test baseline, 23 failing diagnostic assertions followed by 73/73
+passing configuration cases, and a fresh 353/353 full-suite production build.
+The MQTT concurrency and lifecycle suites continue to cover the extracted
+private helpers. Production Make checks in Docker also verified clean/parallel,
+no-op, transitive-header and single-source incremental builds.
 
 Final validation on 2026-10-31: `docker build -t mqtt2dmx:local .` freshly executed
 315 tests, all passing with none ignored. The production image built successfully;

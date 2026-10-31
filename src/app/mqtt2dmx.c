@@ -23,8 +23,8 @@ static char light_filter[HA_TOPIC_LIMIT], availability[HA_TOPIC_LIMIT];
 int Application_Configure(const GatewayConfig *config)
 {
     HA_Initialize(&ha, config);
-    snprintf(light_filter, sizeof(light_filter), "%s/lights/+/set", config->prefix);
-    snprintf(availability, sizeof(availability), "%s/availability", config->prefix);
+    HA_CommandFilter(config, light_filter);
+    HA_AvailabilityTopic(config, availability);
     return MQTT_SetInterface(light_filter, config->discovery ? config->birth_topic : NULL, availability);
 }
 

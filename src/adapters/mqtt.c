@@ -167,6 +167,16 @@ bool MQTT_IsClosed(void)
     return client == NULL;
 }
 
+static void discard_queue_locked(void)
+{
+    while (queue_count)
+    {
+        MQTT_Free(queue[queue_head]);
+        queue_head = (queue_head + 1) % MQTT_QUEUE_CAPACITY;
+        queue_count--;
+    }
+}
+
 void MQTT_Close(void)
 {
     pthread_mutex_lock(&lock);
@@ -182,12 +192,7 @@ void MQTT_Close(void)
     atomic_store(&online, false);
     light_topic = birth_topic = availability_topic = NULL;
     pthread_mutex_lock(&lock);
-    while (queue_count)
-    {
-        MQTT_Free(queue[queue_head]);
-        queue_head = (queue_head + 1) % MQTT_QUEUE_CAPACITY;
-        queue_count--;
-    }
+    discard_queue_locked();
     while (outgoing)
     {
         MQTTMessage *message = outgoing;
@@ -261,12 +266,7 @@ int MQTT_Stop(void)
 {
     pthread_mutex_lock(&lock);
     accepting = false;
-    while (queue_count)
-    {
-        MQTT_Free(queue[queue_head]);
-        queue_head = (queue_head + 1) % MQTT_QUEUE_CAPACITY;
-        queue_count--;
-    }
+    discard_queue_locked();
     pthread_mutex_unlock(&lock);
     if (lifecycle == RUNNING)
     {
@@ -285,6 +285,74 @@ int MQTT_Stop(void)
     return MQTT_Poll();
 }
 
+static int poll_shutdown(void)
+{
+    pthread_mutex_lock(&lock);
+    bool drained = outgoing == NULL;
+    pthread_mutex_unlock(&lock);
+    if (drained && lifecycle == DRAINING)
+    {
+        if (atomic_load(&connection_established) && !MQTT_IsConnected())
+        {
+            MQTT_Close();
+            return MQTT_HasFailed() ? EXIT_FAILURE : EXIT_SUCCESS;
+        }
+        lifecycle = DISCONNECTING;
+        MQTTAsync_disconnectOptions options = MQTTAsync_disconnectOptions_initializer;
+        options.onSuccess = onDisconnected;
+        options.onFailure = onDisconnectFailed;
+        int rc = MQTTAsync_disconnect(client, &options);
+        if (rc != MQTTASYNC_SUCCESS)
+            fail("disconnect", rc);
+    }
+    if (atomic_load(&disconnect_finished))
+        MQTT_Close();
+    return MQTT_HasFailed() ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+
+static void subscribe_if_pending(void)
+{
+    if (!MQTT_IsConnected() || !atomic_exchange(&subscribe_pending, false))
+        return;
+    const char *filters[] = {mqtt_topic, light_topic, birth_topic};
+    for (size_t i = 0; i < 3 && !MQTT_HasFailed(); i++)
+    {
+        if (!filters[i])
+            continue;
+        MQTTAsync_responseOptions options = MQTTAsync_responseOptions_initializer;
+        options.onSuccess = onSubscribed;
+        options.onFailure = onSubscribeFailed;
+        int rc = MQTTAsync_subscribe(client, filters[i], 0, &options);
+        if (rc != MQTTASYNC_SUCCESS)
+            fail("subscribe", rc);
+    }
+}
+
+static MQTTMessage *take_message(void)
+{
+    pthread_mutex_lock(&lock);
+    MQTTMessage *message = NULL;
+    if (queue_count)
+    {
+        message = queue[queue_head];
+        queue_head = (queue_head + 1) % MQTT_QUEUE_CAPACITY;
+        queue_count--;
+    }
+    pthread_mutex_unlock(&lock);
+    return message;
+}
+
+static void deliver_messages(void)
+{
+    for (size_t i = 0; i < MQTT_DRAIN_BUDGET && !MQTT_HasFailed(); i++)
+    {
+        MQTTMessage *message = take_message();
+        if (!message)
+            break;
+        callback(message);
+    }
+}
+
 int MQTT_Poll(void)
 {
     if (MQTT_HasFailed())
@@ -292,59 +360,9 @@ int MQTT_Poll(void)
     if (!client)
         return EXIT_SUCCESS;
     if (lifecycle == DRAINING || lifecycle == DISCONNECTING)
-    {
-        pthread_mutex_lock(&lock);
-        bool drained = outgoing == NULL;
-        pthread_mutex_unlock(&lock);
-        if (drained && lifecycle == DRAINING)
-        {
-            if (atomic_load(&connection_established) && !MQTT_IsConnected())
-            {
-                MQTT_Close();
-                return MQTT_HasFailed() ? EXIT_FAILURE : EXIT_SUCCESS;
-            }
-            lifecycle = DISCONNECTING;
-            MQTTAsync_disconnectOptions options = MQTTAsync_disconnectOptions_initializer;
-            options.onSuccess = onDisconnected;
-            options.onFailure = onDisconnectFailed;
-            int rc = MQTTAsync_disconnect(client, &options);
-            if (rc != MQTTASYNC_SUCCESS)
-                fail("disconnect", rc);
-        }
-        if (atomic_load(&disconnect_finished))
-            MQTT_Close();
-        return MQTT_HasFailed() ? EXIT_FAILURE : EXIT_SUCCESS;
-    }
-    if (MQTT_IsConnected() && atomic_exchange(&subscribe_pending, false))
-    {
-        const char *filters[] = {mqtt_topic, light_topic, birth_topic};
-        for (size_t i = 0; i < 3 && !MQTT_HasFailed(); i++)
-        {
-            if (!filters[i])
-                continue;
-            MQTTAsync_responseOptions options = MQTTAsync_responseOptions_initializer;
-            options.onSuccess = onSubscribed;
-            options.onFailure = onSubscribeFailed;
-            int rc = MQTTAsync_subscribe(client, filters[i], 0, &options);
-            if (rc != MQTTASYNC_SUCCESS)
-                fail("subscribe", rc);
-        }
-    }
-    for (size_t i = 0; i < MQTT_DRAIN_BUDGET && !MQTT_HasFailed(); i++)
-    {
-        pthread_mutex_lock(&lock);
-        MQTTMessage *message = NULL;
-        if (queue_count)
-        {
-            message = queue[queue_head];
-            queue_head = (queue_head + 1) % MQTT_QUEUE_CAPACITY;
-            queue_count--;
-        }
-        pthread_mutex_unlock(&lock);
-        if (!message)
-            break;
-        callback(message);
-    }
+        return poll_shutdown();
+    subscribe_if_pending();
+    deliver_messages();
     return MQTT_HasFailed() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 

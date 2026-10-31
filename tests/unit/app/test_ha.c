@@ -8,6 +8,7 @@ TEST_SOURCE_FILE("config.c")
 TEST_SOURCE_FILE("json_contract.c")
 TEST_SOURCE_FILE("transition.c")
 TEST_SOURCE_FILE("ha_protocol.c")
+TEST_SOURCE_FILE("ha_topics.c")
 TEST_SOURCE_FILE("lights.c")
 
 static GatewayConfig config;
